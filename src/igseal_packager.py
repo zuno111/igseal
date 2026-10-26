@@ -68,7 +68,8 @@ def gather_files(paths):
     return out
 
 
-def seal(paths, out_exe, password, expiry=None, title="봉인 패키지", stub_bytes=None):
+def seal(paths, out_exe, password, expiry=None, title="봉인 패키지", stub_bytes=None,
+         watermark="", max_opens=None, revoke_url=""):
     if stub_bytes is None:
         stub_bytes, _ = find_stub_bytes()
     if not stub_bytes:
@@ -76,11 +77,15 @@ def seal(paths, out_exe, password, expiry=None, title="봉인 패키지", stub_b
     files = gather_files(paths)
     if not files:
         raise RuntimeError("봉인할 파일이 없습니다.")
-    payload = core.build_payload(files, password, expiry=expiry, title=title)
+    import uuid as _uuid
+    pkg_id = _uuid.uuid4().hex[:12]
+    payload = core.build_payload(files, password, expiry=expiry, title=title,
+                                 watermark=watermark, max_opens=max_opens,
+                                 revoke_url=revoke_url, pkg_id=pkg_id)
     exe = core.append_to_stub(stub_bytes, payload)
     with open(out_exe, "wb") as f:
         f.write(exe)
-    return len(files), len(exe)
+    return len(files), len(exe), pkg_id
 
 
 # ---------------- CLI / selftest ----------------
@@ -89,8 +94,8 @@ def cli_seal(argv):
     i = argv.index("--seal")
     src = argv[i + 1]; out = argv[i + 2]; pw = argv[i + 3]
     exp = argv[i + 4] if len(argv) > i + 4 and not argv[i + 4].startswith("--") else None
-    n, sz = seal([src], out, pw, expiry=exp, title="CLI 봉인")
-    print("SEALED files=%d size=%d -> %s" % (n, sz, out))
+    n, sz, pid = seal([src], out, pw, expiry=exp, title="CLI 봉인")
+    print("SEALED files=%d size=%d pkg_id=%s -> %s" % (n, sz, pid, out))
     return 0
 
 
@@ -103,12 +108,14 @@ def selftest():
     d = tempfile.mkdtemp()
     f1 = os.path.join(d, "spec.txt"); open(f1, "w", encoding="utf-8").write("납품 사양서\n보기 전용")
     out = os.path.join(d, "out.exe")
-    n, sz = seal([f1], out, "selftestpw", expiry="2099-12-31", title="셀프테스트", stub_bytes=stub)
+    n, sz, pid = seal([f1], out, "selftestpw", expiry="2099-12-31", title="셀프테스트",
+                      stub_bytes=stub, watermark="WM테스트", max_opens=3)
     pay = core.read_payload_from_file(out)
     assert pay is not None, "payload 재추출 실패"
-    t, e, files = core.unlock(pay, "selftestpw")
-    assert len(files) == 1 and files[0][1].decode("utf-8").startswith("납품 사양서"), "복호화 내용 불일치"
-    msg = "SELFTEST PASS stub=%s files=%d size=%d" % (where, n, sz)
+    r = core.unlock(pay, "selftestpw")
+    assert len(r["files"]) == 1 and r["files"][0][1].decode("utf-8").startswith("납품 사양서"), "복호화 내용 불일치"
+    assert r["watermark"] == "WM테스트" and r["max_opens"] == 3, "옵션 보존 실패"
+    msg = "SELFTEST PASS stub=%s files=%d size=%d pkg=%s" % (where, n, sz, pid)
     print(msg)
     outp = os.environ.get("IGSEAL_SELFTEST_OUT")
     if outp:
@@ -127,9 +134,9 @@ def run_gui():
     sel_paths = []
 
     root = tk.Tk(); root.title(APP_NAME); root.configure(bg=BG)
-    W, H = 720, 640
-    x = (root.winfo_screenwidth() - W) // 2; y = (root.winfo_screenheight() - H) // 2
-    root.geometry("%dx%d+%d+%d" % (W, H, x, y)); root.minsize(640, 560)
+    W, H = 720, 820
+    x = (root.winfo_screenwidth() - W) // 2; y = max(0, (root.winfo_screenheight() - H) // 2)
+    root.geometry("%dx%d+%d+%d" % (W, H, x, y)); root.minsize(660, 700)
 
     tk.Label(root, text="igSeal 봉인 제작기", font=(FONT, 16, "bold"), bg=BG, fg=FG).pack(pady=(18, 2))
     tk.Label(root, text="파일을 암호화해 보기 전용 단일 exe 로 만듭니다 · 만료일 자동삭제",
@@ -208,6 +215,21 @@ def run_gui():
                   command=lambda dd=d: set_days(dd), cursor="hand2", padx=8).pack(side="left", padx=(0, 5))
     tk.Label(c3, text="형식: YYYY-MM-DD", font=(FONT, 8), bg=CARD, fg=SUB).pack(anchor="w", padx=14, pady=(0, 10))
 
+    # 4. 추가 보호 (선택)
+    c4 = card(root, "4. 추가 보호 (선택)")
+    i4 = tk.Frame(c4, bg=CARD); i4.pack(fill="x", padx=14, pady=(0, 10))
+    def row4(lbl, hint=""):
+        r = tk.Frame(i4, bg=CARD); r.pack(fill="x", pady=3)
+        tk.Label(r, text=lbl, font=(FONT, 9), bg=CARD, fg=SUB, width=11, anchor="w").pack(side="left")
+        e = tk.Entry(r, font=(FONT, 10), bg=BG, fg=FG, relief="flat", insertbackground=FG)
+        e.pack(side="left", fill="x", expand=True, ipady=4)
+        if hint:
+            tk.Label(i4, text=hint, font=(FONT, 8), bg=CARD, fg=SUB, anchor="w").pack(fill="x")
+        return e
+    e_wm = row4("워터마크", "열람·임시파일에 박히는 문구 (예: 거래처명/날짜). 비우면 안 넣음")
+    e_opens = row4("최대 열람수", "숫자만. 비우면 무제한")
+    e_revoke = row4("원격폐기 URL", "무료 GitHub Gist raw JSON. 미납 시 그 목록에 패키지ID 추가하면 다음 실행 때 삭제")
+
     status = tk.Label(root, text="", font=(FONT, 9), bg=BG, fg=SUB)
     status.pack(pady=(4, 0))
 
@@ -234,14 +256,28 @@ def run_gui():
                                            filetypes=[("실행파일", "*.exe")])
         if not out:
             return
+        wm = e_wm.get().strip()
+        mo = None
+        if e_opens.get().strip():
+            try:
+                mo = int(e_opens.get().strip())
+                if mo <= 0:
+                    raise ValueError
+            except Exception:
+                messagebox.showwarning(APP_NAME, "최대 열람수는 양의 정수여야 합니다."); return
+        rv = e_revoke.get().strip()
         status.configure(text="봉인 중...", fg=SUB); root.update()
         try:
-            n, sz = seal(sel_paths, out, pw, expiry=exp, title=title)
+            n, sz, pid = seal(sel_paths, out, pw, expiry=exp, title=title,
+                              watermark=wm, max_opens=mo, revoke_url=rv)
         except Exception as e:
             messagebox.showerror(APP_NAME, "봉인 실패:\n" + str(e)); status.configure(text=""); return
-        mb_txt = ("봉인 완료\n\n파일 %d개 · %.1f MB\n%s\n\n"
-                  "이 exe 하나만 거래처에 전달하세요." % (n, sz / 1048576, out))
-        status.configure(text="완료: " + os.path.basename(out), fg=OK)
+        extra = "\n패키지 ID: %s" % pid
+        if rv:
+            extra += "\n(미납 시 이 ID를 폐기 목록에 추가하면 원격 삭제됩니다)"
+        mb_txt = ("봉인 완료\n\n파일 %d개 · %.1f MB\n%s%s\n\n"
+                  "이 exe 하나만 거래처에 전달하세요." % (n, sz / 1048576, out, extra))
+        status.configure(text="완료: %s (ID %s)" % (os.path.basename(out), pid), fg=OK)
         messagebox.showinfo(APP_NAME, mb_txt)
 
     tk.Button(root, text="봉인하기", font=(FONT, 13, "bold"), bg=ACCENT, fg="white",

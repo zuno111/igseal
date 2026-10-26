@@ -56,10 +56,11 @@ def selftest():
     if core.header_tampered(hdr):
         return _report("SELFTEST FAIL: 헤더 변조 탐지됨", 1)
     try:
-        title, exp, files = core.unlock(payload, pw)
+        r = core.unlock(payload, pw)
     except Exception as e:
         return _report("SELFTEST FAIL: unlock 실패: %s" % e, 1)
-    return _report("SELFTEST PASS title=%r expiry=%r files=%d" % (title, exp, len(files)), 0)
+    return _report("SELFTEST PASS title=%r expiry=%r files=%d wm=%r" % (
+        r["title"], r["expiry"], len(r["files"]), r["watermark"]), 0)
 
 
 # ---------------- GUI ----------------
@@ -144,15 +145,36 @@ def run_gui():
     if core.header_tampered(hdr):
         die("파일이 변조되었습니다. 열 수 없습니다.\n제작자에게 다시 받아주세요.")
         return
+
+    # 원격 폐기(킬스위치) / 만료 연장 조회 — 인터넷 연결 시에만, 실패하면 무시
+    eff_expiry = hdr.get("expiry")
+    rstat, rval = core.remote_status(hdr)
+    if rstat == "revoke":
+        die("제작자에 의해 사용이 중지되어 파일이 삭제되었습니다.", destruct=True)
+        return
+    if rstat == "extend" and rval:
+        try:
+            a = datetime.datetime.strptime(rval, "%Y-%m-%d").date()
+            b = datetime.datetime.strptime(eff_expiry, "%Y-%m-%d").date() if eff_expiry else None
+            if b is None or a > b:
+                eff_expiry = rval
+        except Exception:
+            pass
+
     if core.clock_rolled_back(hdr):
         die("시스템 시계가 과거로 변경된 것이 감지되었습니다.\n날짜를 올바르게 맞춘 뒤 다시 실행하세요.")
         return
-    if core.is_expired(hdr):
+    if core.is_expired({"expiry": eff_expiry}):
         die("사용 기간이 만료되어 파일이 삭제되었습니다.", destruct=True)
         return
 
+    # ---- 열람 횟수 제한 ----
+    if core.opens_exceeded(hdr):
+        die("허용된 열람 횟수를 모두 사용했습니다.\n제작자에게 문의하세요.")
+        return
+
     # ---- 비밀번호 입력 ----
-    state = {"files": None, "title": "", "expiry": hdr.get("expiry")}
+    state = {"data": None}
 
     def ask_password():
         dlg = tk.Toplevel(root); dlg.title(APP_NAME); dlg.configure(bg=BG)
@@ -163,7 +185,7 @@ def run_gui():
         tk.Label(dlg, text="🔒", font=(FONT, 28), bg=BG, fg=ACCENT).pack(pady=(22, 4))
         tk.Label(dlg, text=hdr.get("title", "봉인 패키지"), font=(FONT, 13, "bold"),
                  bg=BG, fg=FG).pack()
-        exp = hdr.get("expiry")
+        exp = eff_expiry
         if exp:
             d = datetime.datetime.strptime(exp, "%Y-%m-%d").date()
             left = (d - datetime.date.today()).days
@@ -178,13 +200,16 @@ def run_gui():
 
         def submit(*_):
             try:
-                t, e, files = core.unlock(payload, ent.get())
+                r = core.unlock(payload, ent.get())
             except ValueError:
                 tries["n"] += 1
                 ent.delete(0, "end")
-                messagebox.showwarning(APP_NAME, "비밀번호가 올바르지 않습니다. (%d회)" % tries["n"])
+                if tries["n"] >= 10:
+                    messagebox.showerror(APP_NAME, "비밀번호 시도 횟수를 초과했습니다.")
+                    os._exit(0)
+                messagebox.showwarning(APP_NAME, "비밀번호가 올바르지 않습니다. (%d/10회)" % tries["n"])
                 return
-            state["files"] = files; state["title"] = t; state["expiry"] = e
+            state["data"] = r
             dlg.destroy()
 
         tk.Button(dlg, text="열기", font=(FONT, 11, "bold"), bg=ACCENT, fg="white",
@@ -194,12 +219,35 @@ def run_gui():
         dlg.wait_window()
 
     ask_password()
-    if state["files"] is None:
+    if state["data"] is None:
         os._exit(0)
 
+    # 열람 1회 기록
+    core.record_open(hdr)
+
     # ---- 메인 뷰어 ----
-    files = state["files"]
+    data = state["data"]
+    files = data["files"]
+    watermark = data.get("watermark") or ""
+    state["title"] = data["title"]
+    state["expiry"] = eff_expiry
     root.deiconify()
+
+    # 화면 캡처/녹화 차단 (윈도우). 스크린샷·화면녹화에 검게 나옴.
+    def apply_capture_block():
+        if not sys.platform.startswith("win"):
+            return
+        try:
+            import ctypes
+            hwnd = ctypes.windll.user32.GetParent(root.winfo_id())
+            if not hwnd:
+                hwnd = root.winfo_id()
+            # WDA_EXCLUDEFROMCAPTURE=0x11 (Win10 2004+), 실패시 WDA_MONITOR=0x01
+            if not ctypes.windll.user32.SetWindowDisplayAffinity(hwnd, 0x11):
+                ctypes.windll.user32.SetWindowDisplayAffinity(hwnd, 0x01)
+        except Exception:
+            pass
+    root.after(300, apply_capture_block)
     W, H = 980, 640
     x = (root.winfo_screenwidth() - W) // 2; y = (root.winfo_screenheight() - H) // 2
     root.geometry("%dx%d+%d+%d" % (W, H, x, y))
@@ -253,6 +301,37 @@ def run_gui():
     def block(*_):
         return "break"
 
+    def _wm(im):
+        """PIL 이미지에 반투명 대각선 반복 워터마크 합성."""
+        if not watermark or not HAVE_PIL:
+            return im
+        try:
+            from PIL import ImageDraw, ImageFont
+            base = im.convert("RGBA")
+            W_, H_ = base.size
+            layer = Image.new("RGBA", base.size, (0, 0, 0, 0))
+            dr = ImageDraw.Draw(layer)
+            fsize = max(16, W_ // 28)
+            font = None
+            for fp in ("malgun.ttf", "C:/Windows/Fonts/malgun.ttf", "arial.ttf",
+                       "DejaVuSans.ttf"):
+                try:
+                    font = ImageFont.truetype(fp, fsize); break
+                except Exception:
+                    continue
+            if font is None:
+                font = ImageFont.load_default()
+            step_x = max(220, W_ // 3)
+            step_y = max(140, H_ // 4)
+            for yy in range(0, H_ + step_y, step_y):
+                for xx in range(-step_x, W_ + step_x, step_x):
+                    dr.text((xx, yy), watermark, font=font, fill=(255, 255, 255, 60))
+            layer = layer.rotate(30, expand=0)
+            out = Image.alpha_composite(base, layer)
+            return out.convert("RGB")
+        except Exception:
+            return im
+
     def show_text(data):
         clear_prev()
         try:
@@ -282,6 +361,7 @@ def run_gui():
             return
         try:
             im = Image.open(io.BytesIO(data)); im.load()
+            im = _wm(im)
         except Exception:
             tk.Label(prev, text="이미지를 열 수 없습니다", font=(FONT, 11),
                      bg=CARD, fg=SUB).pack(expand=True)
@@ -311,6 +391,7 @@ def run_gui():
                 pix = pg.get_pixmap(dpi=110)
                 from PIL import Image as _I
                 im = _I.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                im = _wm(im)
                 im.thumbnail((640, 2000))
                 ph = ImageTk.PhotoImage(im); keep.append(ph)
                 tk.Label(inner, image=ph, bg=CARD).pack(pady=6)
@@ -326,8 +407,29 @@ def run_gui():
         try:
             d = workspace()
             path = os.path.join(d, os.path.basename(name))
-            with open(path, "wb") as f:
-                f.write(data)
+            ext = os.path.splitext(name)[1].lower()
+            wrote = False
+            # 가능하면 워터마크를 박아서 내보냄 (이미지/PDF)
+            if watermark:
+                try:
+                    if ext in IMG_EXT and HAVE_PIL:
+                        im = _wm(Image.open(io.BytesIO(data)).convert("RGB"))
+                        im.save(path)
+                        wrote = True
+                    elif ext == ".pdf" and HAVE_PDF:
+                        doc = fitz.open(stream=data, filetype="pdf")
+                        for pg in doc:
+                            rect = pg.rect
+                            pg.insert_textbox(rect, (watermark + "    ") * 3,
+                                              fontsize=14, color=(0.6, 0.6, 0.6),
+                                              rotate=0, align=1, overlay=True)
+                        doc.save(path)
+                        wrote = True
+                except Exception:
+                    wrote = False
+            if not wrote:
+                with open(path, "wb") as f:
+                    f.write(data)
             try:
                 os.chmod(path, _stat.S_IREAD)   # 읽기 전용
             except Exception:

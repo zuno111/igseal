@@ -15,7 +15,8 @@ header_json:
   - plaintext_json = { files: [ {name, size, data(b64)} ], expiry, title }
   - hmac = HMAC-SHA256(stub_secret, header의 hmac 제외 필드 canonical) — 평문 헤더 casual 변조 탐지용
 """
-import os, sys, json, base64, struct, hmac, hashlib, datetime, subprocess
+import os, sys, json, base64, struct, hmac, hashlib, datetime, subprocess, uuid
+import urllib.request
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
@@ -28,7 +29,7 @@ FOOTER_LEN = 16 + 8
 # hex 에디터로 만료일만 슬쩍 바꾸는 수준을 막는 용도.
 STUB_SECRET = b"igSeal/STUDIO-ig/stub-hmac-secret/2026"
 
-SCRYPT_N = 2 ** 15   # 32768
+SCRYPT_N = 2 ** 16   # 65536 — 상향(무차별 대입 비용 증가)
 SCRYPT_R = 8
 SCRYPT_P = 1
 
@@ -47,16 +48,24 @@ def _sign_header(hdr: dict) -> str:
     return hmac.new(STUB_SECRET, _canon_for_hmac(hdr), hashlib.sha256).hexdigest()
 
 
-def build_payload(files, password, expiry=None, title="봉인 패키지"):
-    """files: [(name, bytes)]. expiry: 'YYYY-MM-DD' 또는 None. -> payload bytes"""
+def build_payload(files, password, expiry=None, title="봉인 패키지",
+                  watermark="", max_opens=None, revoke_url="", pkg_id=None):
+    """files: [(name, bytes)]. expiry: 'YYYY-MM-DD' 또는 None. -> payload bytes
+    watermark: 열람/임시파일에 찍을 문구. max_opens: 최대 열람 횟수(None=무제한).
+    revoke_url: 원격 폐기 목록 JSON URL(평문 헤더, HMAC 보호). pkg_id: 패키지 식별자."""
     salt = os.urandom(16)
     nonce = os.urandom(12)
     key = _derive_key(password, salt)
+    if not pkg_id:
+        pkg_id = uuid.uuid4().hex[:12]
 
     total = sum(len(b) for _, b in files)
     plain = {
         "title": title,
         "expiry": expiry,
+        "watermark": watermark or "",
+        "max_opens": max_opens,
+        "pkg_id": pkg_id,
         "files": [
             {"name": n, "size": len(b), "data": base64.b64encode(b).decode("ascii")}
             for n, b in files
@@ -66,10 +75,13 @@ def build_payload(files, password, expiry=None, title="봉인 패키지"):
     ct = AESGCM(key).encrypt(nonce, plaintext, None)
 
     hdr = {
-        "v": 1,
+        "v": 2,
         "created": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "expiry": expiry,
         "title": title,
+        "pkg_id": pkg_id,
+        "revoke_url": revoke_url or "",
+        "max_opens": max_opens,
         "file_count": len(files),
         "total_size": total,
         "kdf": "scrypt",
@@ -132,7 +144,8 @@ def is_expired(hdr: dict, today=None) -> bool:
 
 
 def unlock(payload: bytes, password: str):
-    """성공 시 (title, expiry, [(name, bytes)]). 비번 오류/손상 시 ValueError."""
+    """성공 시 dict(title, expiry, watermark, max_opens, pkg_id, files=[(name,bytes)]).
+    비번 오류/손상 시 ValueError."""
     hdr, ct = parse_header(payload)
     salt = bytes.fromhex(hdr["salt"])
     nonce = bytes.fromhex(hdr["nonce"])
@@ -142,8 +155,14 @@ def unlock(payload: bytes, password: str):
     except Exception:
         raise ValueError("비밀번호가 올바르지 않거나 파일이 손상되었습니다.")
     plain = json.loads(plaintext.decode("utf-8"))
-    files = [(f["name"], base64.b64decode(f["data"])) for f in plain["files"]]
-    return plain.get("title", ""), plain.get("expiry"), files
+    return {
+        "title": plain.get("title", ""),
+        "expiry": plain.get("expiry"),
+        "watermark": plain.get("watermark", ""),
+        "max_opens": plain.get("max_opens"),
+        "pkg_id": plain.get("pkg_id", ""),
+        "files": [(f["name"], base64.b64decode(f["data"])) for f in plain["files"]],
+    }
 
 
 # ----- 시계 되돌림 탐지 (best-effort) -----
@@ -158,27 +177,92 @@ def _state_path(pkg_id: str) -> str:
 
 
 def pkg_id_of(hdr: dict) -> str:
+    if hdr.get("pkg_id"):
+        return hdr["pkg_id"]
     return hashlib.sha256((hdr.get("salt", "") + hdr.get("nonce", "")).encode()).hexdigest()[:16]
+
+
+def _load_state(hdr):
+    p = _state_path(pkg_id_of(hdr))
+    try:
+        with open(p, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_state(hdr, st):
+    try:
+        with open(_state_path(pkg_id_of(hdr)), "w") as f:
+            json.dump(st, f)
+    except Exception:
+        pass
 
 
 def clock_rolled_back(hdr: dict, today=None) -> bool:
     if today is None:
         today = datetime.date.today()
-    p = _state_path(pkg_id_of(hdr))
+    st = _load_state(hdr)
     seen = None
     try:
-        with open(p, "r") as f:
-            seen = datetime.datetime.strptime(f.read().strip(), "%Y-%m-%d").date()
+        seen = datetime.datetime.strptime(st.get("seen", ""), "%Y-%m-%d").date()
     except Exception:
         seen = None
     rolled = seen is not None and today < seen
     newest = today if seen is None or today > seen else seen
+    st["seen"] = newest.strftime("%Y-%m-%d")
+    _save_state(hdr, st)
+    return rolled
+
+
+def open_count(hdr) -> int:
+    return int(_load_state(hdr).get("opens", 0))
+
+
+def record_open(hdr) -> int:
+    st = _load_state(hdr)
+    st["opens"] = int(st.get("opens", 0)) + 1
+    _save_state(hdr, st)
+    return st["opens"]
+
+
+def opens_exceeded(hdr) -> bool:
+    mx = hdr.get("max_opens")
+    if not mx:
+        return False
     try:
-        with open(p, "w") as f:
-            f.write(newest.strftime("%Y-%m-%d"))
+        return open_count(hdr) >= int(mx)
+    except Exception:
+        return False
+
+
+# ----- 원격 폐기(킬스위치) -----
+def remote_status(hdr, timeout=3):
+    """revoke_url(JSON)을 조회. 반환:
+       ('revoke', None)  -> 폐기됨(자동삭제)
+       ('extend', 'YYYY-MM-DD') -> 만료일 연장
+       (None, None) -> 조회 실패/해당 없음(오프라인 fallback)
+    JSON 형식: {"revoked":["pkgid",...], "extend":{"pkgid":"YYYY-MM-DD"}}"""
+    url = hdr.get("revoke_url") or ""
+    if not url:
+        return (None, None)
+    pid = pkg_id_of(hdr)
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "igSeal"})
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            data = json.loads(r.read().decode("utf-8"))
+    except Exception:
+        return (None, None)
+    try:
+        if pid in (data.get("revoked") or []):
+            return ("revoke", None)
+        ext = (data.get("extend") or {}).get(pid)
+        if ext:
+            datetime.datetime.strptime(ext, "%Y-%m-%d")
+            return ("extend", ext)
     except Exception:
         pass
-    return rolled
+    return (None, None)
 
 
 # ----- 자기삭제 -----
