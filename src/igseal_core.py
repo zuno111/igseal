@@ -49,7 +49,8 @@ def _sign_header(hdr: dict) -> str:
 
 
 def build_payload(files, password, expiry=None, title="봉인 패키지",
-                  watermark="", max_opens=None, revoke_url="", pkg_id=None):
+                  watermark="", max_opens=None, revoke_url="", pkg_id=None,
+                  require_activation=False, lease_days=None):
     """files: [(name, bytes)]. expiry: 'YYYY-MM-DD' 또는 None. -> payload bytes
     watermark: 열람/임시파일에 찍을 문구. max_opens: 최대 열람 횟수(None=무제한).
     revoke_url: 원격 폐기 목록 JSON URL(평문 헤더, HMAC 보호). pkg_id: 패키지 식별자."""
@@ -82,6 +83,8 @@ def build_payload(files, password, expiry=None, title="봉인 패키지",
         "pkg_id": pkg_id,
         "revoke_url": revoke_url or "",
         "max_opens": max_opens,
+        "require_activation": bool(require_activation),
+        "lease_days": lease_days,
         "file_count": len(files),
         "total_size": total,
         "kdf": "scrypt",
@@ -245,24 +248,128 @@ def remote_status(hdr, timeout=3):
     JSON 형식: {"revoked":["pkgid",...], "extend":{"pkgid":"YYYY-MM-DD"}}"""
     url = hdr.get("revoke_url") or ""
     if not url:
-        return (None, None)
+        return (None, None, False)
     pid = pkg_id_of(hdr)
     try:
         req = urllib.request.Request(url, headers={"User-Agent": "igSeal"})
         with urllib.request.urlopen(req, timeout=timeout) as r:
             data = json.loads(r.read().decode("utf-8"))
     except Exception:
-        return (None, None)
+        return (None, None, False)   # 오프라인/조회 실패
     try:
         if pid in (data.get("revoked") or []):
-            return ("revoke", None)
+            return ("revoke", None, True)
         ext = (data.get("extend") or {}).get(pid)
         if ext:
             datetime.datetime.strptime(ext, "%Y-%m-%d")
-            return ("extend", ext)
+            return ("extend", ext, True)
     except Exception:
         pass
-    return (None, None)
+    return (None, None, True)   # 조회 성공, 정상
+
+
+# ----- 최초 온라인 활성화 + 오프라인 리스(임대) -----
+def needs_activation(hdr) -> bool:
+    return bool(hdr.get("require_activation"))
+
+
+def is_activated(hdr) -> bool:
+    return bool(_load_state(hdr).get("activated"))
+
+
+def mark_activated(hdr):
+    st = _load_state(hdr)
+    st["activated"] = True
+    st["activated_at"] = datetime.date.today().strftime("%Y-%m-%d")
+    _save_state(hdr, st)
+
+
+def lease_days_of(hdr):
+    v = hdr.get("lease_days")
+    try:
+        return int(v) if v else None
+    except Exception:
+        return None
+
+
+def renew_lease(hdr, today=None):
+    ld = lease_days_of(hdr)
+    if not ld:
+        return
+    if today is None:
+        today = datetime.date.today()
+    st = _load_state(hdr)
+    st["lease_until"] = (today + datetime.timedelta(days=ld)).strftime("%Y-%m-%d")
+    _save_state(hdr, st)
+
+
+def lease_ok(hdr, today=None) -> bool:
+    """리스 미사용이면 항상 True. 사용 중이면 로컬 유효기한 내라야 True."""
+    ld = lease_days_of(hdr)
+    if not ld:
+        return True
+    if today is None:
+        today = datetime.date.today()
+    s = _load_state(hdr).get("lease_until")
+    if not s:
+        return False
+    try:
+        return today <= datetime.datetime.strptime(s, "%Y-%m-%d").date()
+    except Exception:
+        return False
+
+
+# ----- 제작자 대장(ledger) + 폐기/연장 목록 생성 -----
+def _ledger_path() -> str:
+    base = os.environ.get("APPDATA") or os.path.expanduser("~/.config")
+    d = os.path.join(base, "igSeal")
+    try:
+        os.makedirs(d, exist_ok=True)
+    except Exception:
+        pass
+    return os.path.join(d, "ledger.json")
+
+
+def ledger_all():
+    try:
+        with open(_ledger_path(), "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+
+def _ledger_save(rows):
+    try:
+        with open(_ledger_path(), "w", encoding="utf-8") as f:
+            json.dump(rows, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+
+def ledger_add(entry):
+    rows = ledger_all()
+    rows = [r for r in rows if r.get("pkg_id") != entry.get("pkg_id")]
+    rows.insert(0, entry)
+    _ledger_save(rows)
+
+
+def ledger_update(pkg_id, **fields):
+    rows = ledger_all()
+    for r in rows:
+        if r.get("pkg_id") == pkg_id:
+            r.update(fields)
+    _ledger_save(rows)
+
+
+def ledger_export_revoke(out_path):
+    """대장에서 revoke.json 생성. status=='revoked' -> revoked 목록,
+    extend 값 있으면 extend 맵. 반환: (폐기수, 연장수)"""
+    rows = ledger_all()
+    revoked = [r["pkg_id"] for r in rows if r.get("status") == "revoked"]
+    extend = {r["pkg_id"]: r["extend"] for r in rows if r.get("extend")}
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump({"revoked": revoked, "extend": extend}, f, ensure_ascii=False, indent=2)
+    return len(revoked), len(extend)
 
 
 # ----- 자기삭제 -----

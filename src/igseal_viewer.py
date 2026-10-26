@@ -148,7 +148,7 @@ def run_gui():
 
     # 원격 폐기(킬스위치) / 만료 연장 조회 — 인터넷 연결 시에만, 실패하면 무시
     eff_expiry = hdr.get("expiry")
-    rstat, rval = core.remote_status(hdr)
+    rstat, rval, online = core.remote_status(hdr)
     if rstat == "revoke":
         die("제작자에 의해 사용이 중지되어 파일이 삭제되었습니다.", destruct=True)
         return
@@ -160,6 +160,23 @@ def run_gui():
                 eff_expiry = rval
         except Exception:
             pass
+
+    # 최초 온라인 활성화 필수
+    if core.needs_activation(hdr) and not core.is_activated(hdr):
+        if online:
+            core.mark_activated(hdr)
+            core.renew_lease(hdr)
+        else:
+            die("최초 1회 인터넷 연결이 필요합니다.\n인터넷에 연결한 뒤 다시 실행하세요.")
+            return
+
+    # 오프라인 리스(임대) — 온라인이면 기한 갱신, 기한 지나면 재연결 요구
+    if core.lease_days_of(hdr):
+        if online:
+            core.renew_lease(hdr)
+        if not core.lease_ok(hdr):
+            die("오프라인 사용 기간이 지났습니다.\n인터넷에 연결한 뒤 다시 실행하면 갱신됩니다.")
+            return
 
     if core.clock_rolled_back(hdr):
         die("시스템 시계가 과거로 변경된 것이 감지되었습니다.\n날짜를 올바르게 맞춘 뒤 다시 실행하세요.")

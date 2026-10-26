@@ -98,18 +98,62 @@ check("무제한이면 not exceeded", not c.opens_exceeded(hdr_no))
 # 11. 원격 폐기(킬스위치) — 로컬 file:// JSON
 rj = os.path.join(TMP, "revoke.json")
 open(rj, "w").write('{"revoked":["PKGTEST01"],"extend":{}}')
-st, val = c.remote_status(hdr10)
-check("원격 폐기 감지", st == "revoke")
+st, val, on = c.remote_status(hdr10)
+check("원격 폐기 감지", st == "revoke" and on is True)
 # 연장
 open(rj, "w").write('{"revoked":[],"extend":{"PKGTEST01":"2027-06-30"}}')
-st2, val2 = c.remote_status(hdr10)
-check("원격 만료연장 감지", st2 == "extend" and val2 == "2027-06-30")
-# URL 없으면 조회 안함
+st2, val2, on2 = c.remote_status(hdr10)
+check("원격 만료연장 감지", st2 == "extend" and val2 == "2027-06-30" and on2 is True)
+# 정상(조회 성공, 폐기 아님) -> online True
+open(rj, "w").write('{"revoked":[],"extend":{}}')
+st3, val3, on3 = c.remote_status(hdr10)
+check("정상이면 online True", st3 is None and on3 is True)
+# URL 없으면 조회 안함, online False
 hdr_nourl = dict(hdr10); hdr_nourl["revoke_url"] = ""
-check("revoke_url 없으면 none", c.remote_status(hdr_nourl) == (None, None))
-# 조회 실패시 fallback(none)
+check("revoke_url 없으면 offline", c.remote_status(hdr_nourl) == (None, None, False))
+# 조회 실패시 fallback, online False
 hdr_bad = dict(hdr10); hdr_bad["revoke_url"] = "file:///tmp/igseal_test/nonexist.json"
-check("조회 실패시 fallback none", c.remote_status(hdr_bad) == (None, None))
+check("조회 실패시 offline", c.remote_status(hdr_bad) == (None, None, False))
+
+# 11b. 최초 활성화 + 오프라인 리스
+hdr_a = c.build_payload([("x", b"y")], "pw", pkg_id="ACTTEST01",
+                        require_activation=True, lease_days=2,
+                        revoke_url="file:///tmp/igseal_test/revoke.json")
+ha, _ = c.parse_header(hdr_a)
+for f in glob.glob(os.path.join(cfgbak, "igSeal", "ACTTEST01.dat")):
+    os.remove(f)
+check("활성화 필요 플래그", c.needs_activation(ha))
+check("초기 미활성", not c.is_activated(ha))
+check("리스 일수 2", c.lease_days_of(ha) == 2)
+check("미갱신시 lease_ok False", not c.lease_ok(ha))
+# 온라인 활성화 가정: mark + renew
+c.mark_activated(ha); c.renew_lease(ha, datetime.date(2026, 10, 26))
+check("활성화 기록됨", c.is_activated(ha))
+check("리스 갱신 후 당일 ok", c.lease_ok(ha, datetime.date(2026, 10, 27)))
+check("리스 2일 경계 ok", c.lease_ok(ha, datetime.date(2026, 10, 28)))
+check("리스 만료 후 거부", not c.lease_ok(ha, datetime.date(2026, 10, 29)))
+# 리스 미사용이면 항상 ok
+hdr_nl = dict(ha); hdr_nl["lease_days"] = None
+check("리스 미사용 항상 ok", c.lease_ok(hdr_nl, datetime.date(2099, 1, 1)))
+
+# 12. 제작자 대장 + revoke.json 생성
+import json as _json
+lf = os.path.join(cfgbak, "igSeal", "ledger.json")
+if os.path.exists(lf):
+    os.remove(lf)
+c.ledger_add({"pkg_id": "A1", "title": "A납품", "client": "갑", "expiry": "2026-12-31", "status": "active", "extend": ""})
+c.ledger_add({"pkg_id": "B2", "title": "B납품", "client": "을", "expiry": "2026-11-30", "status": "active", "extend": ""})
+check("대장 2건 기록", len(c.ledger_all()) == 2)
+c.ledger_update("A1", status="revoked")
+c.ledger_update("B2", extend="2027-06-30")
+rj2 = os.path.join(TMP, "revoke_export.json")
+nrev, next_ = c.ledger_export_revoke(rj2)
+check("폐기 1건 연장 1건 집계", nrev == 1 and next_ == 1)
+exp = _json.load(open(rj2, encoding="utf-8"))
+check("revoke.json 내용", exp["revoked"] == ["A1"] and exp["extend"] == {"B2": "2027-06-30"})
+# 같은 pkg_id 재봉인시 중복 방지
+c.ledger_add({"pkg_id": "A1", "title": "A재봉인", "client": "갑", "expiry": "2027-01-01", "status": "active", "extend": ""})
+check("중복 pkg_id 갱신", len(c.ledger_all()) == 2)
 
 print("\n" + ("ALL PASS" if ok else "SOME FAILED"))
 sys.exit(0 if ok else 1)

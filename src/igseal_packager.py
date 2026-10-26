@@ -69,7 +69,7 @@ def gather_files(paths):
 
 
 def seal(paths, out_exe, password, expiry=None, title="봉인 패키지", stub_bytes=None,
-         watermark="", max_opens=None, revoke_url=""):
+         watermark="", max_opens=None, revoke_url="", require_activation=False, lease_days=None):
     if stub_bytes is None:
         stub_bytes, _ = find_stub_bytes()
     if not stub_bytes:
@@ -81,7 +81,8 @@ def seal(paths, out_exe, password, expiry=None, title="봉인 패키지", stub_b
     pkg_id = _uuid.uuid4().hex[:12]
     payload = core.build_payload(files, password, expiry=expiry, title=title,
                                  watermark=watermark, max_opens=max_opens,
-                                 revoke_url=revoke_url, pkg_id=pkg_id)
+                                 revoke_url=revoke_url, pkg_id=pkg_id,
+                                 require_activation=require_activation, lease_days=lease_days)
     exe = core.append_to_stub(stub_bytes, payload)
     with open(out_exe, "wb") as f:
         f.write(exe)
@@ -191,6 +192,7 @@ def run_gui():
         return e
     e_title = row("제목")
     e_title.insert(0, "납품 패키지")
+    e_client = row("거래처")
     e_pw = row("비밀번호"); e_pw.configure(show="●")
     e_pw2 = row("비밀번호 확인"); e_pw2.configure(show="●")
 
@@ -228,7 +230,19 @@ def run_gui():
         return e
     e_wm = row4("워터마크", "열람·임시파일에 박히는 문구 (예: 거래처명/날짜). 비우면 안 넣음")
     e_opens = row4("최대 열람수", "숫자만. 비우면 무제한")
-    e_revoke = row4("원격폐기 URL", "무료 GitHub Gist raw JSON. 미납 시 그 목록에 패키지ID 추가하면 다음 실행 때 삭제")
+    e_revoke = row4("원격폐기 URL", "무료 GitHub Gist raw JSON. 미납 시 관리창에서 폐기하면 다음 실행 때 삭제")
+
+    ract = tk.BooleanVar(value=False)
+    rr = tk.Frame(c4, bg=CARD); rr.pack(fill="x", padx=14, pady=(2, 0))
+    tk.Checkbutton(rr, text="최초 1회 온라인 활성화 필수 (랜선 뽑고 첫 실행 차단)", variable=ract,
+                   font=(FONT, 9), bg=CARD, fg=FG, selectcolor=BG, activebackground=CARD,
+                   activeforeground=FG).pack(side="left")
+    rl = tk.Frame(c4, bg=CARD); rl.pack(fill="x", padx=14, pady=(2, 10))
+    tk.Label(rl, text="오프라인 허용일", font=(FONT, 9), bg=CARD, fg=SUB, width=11, anchor="w").pack(side="left")
+    e_lease = tk.Entry(rl, font=(FONT, 10), bg=BG, fg=FG, relief="flat", width=8,
+                       insertbackground=FG, justify="center"); e_lease.pack(side="left", ipady=3)
+    tk.Label(rl, text="일. 이 기간마다 인터넷 재연결 필요. 비우면 리스 안 씀(활성화/폐기엔 URL 필요)",
+             font=(FONT, 8), bg=CARD, fg=SUB).pack(side="left", padx=6)
 
     status = tk.Label(root, text="", font=(FONT, 9), bg=BG, fg=SUB)
     status.pack(pady=(4, 0))
@@ -266,22 +280,121 @@ def run_gui():
             except Exception:
                 messagebox.showwarning(APP_NAME, "최대 열람수는 양의 정수여야 합니다."); return
         rv = e_revoke.get().strip()
+        req_act = ract.get()
+        lease = None
+        if e_lease.get().strip():
+            try:
+                lease = int(e_lease.get().strip())
+                if lease <= 0:
+                    raise ValueError
+            except Exception:
+                messagebox.showwarning(APP_NAME, "오프라인 허용일은 양의 정수여야 합니다."); return
+        if (req_act or lease) and not rv:
+            messagebox.showwarning(APP_NAME, "활성화/리스를 쓰려면 원격폐기 URL이 필요합니다."); return
         status.configure(text="봉인 중...", fg=SUB); root.update()
         try:
             n, sz, pid = seal(sel_paths, out, pw, expiry=exp, title=title,
-                              watermark=wm, max_opens=mo, revoke_url=rv)
+                              watermark=wm, max_opens=mo, revoke_url=rv,
+                              require_activation=req_act, lease_days=lease)
         except Exception as e:
             messagebox.showerror(APP_NAME, "봉인 실패:\n" + str(e)); status.configure(text=""); return
+        # 제작자 대장 기록
+        import datetime as _dt
+        core.ledger_add({
+            "pkg_id": pid, "title": title, "client": e_client.get().strip(),
+            "created": _dt.datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "expiry": exp or "", "revoke_url": rv, "status": "active", "extend": "",
+        })
         extra = "\n패키지 ID: %s" % pid
         if rv:
-            extra += "\n(미납 시 이 ID를 폐기 목록에 추가하면 원격 삭제됩니다)"
+            extra += "\n(미납 시 관리창에서 이 건을 폐기하면 원격 삭제됩니다)"
         mb_txt = ("봉인 완료\n\n파일 %d개 · %.1f MB\n%s%s\n\n"
                   "이 exe 하나만 거래처에 전달하세요." % (n, sz / 1048576, out, extra))
         status.configure(text="완료: %s (ID %s)" % (os.path.basename(out), pid), fg=OK)
         messagebox.showinfo(APP_NAME, mb_txt)
 
-    tk.Button(root, text="봉인하기", font=(FONT, 13, "bold"), bg=ACCENT, fg="white",
-              relief="flat", command=do_seal, cursor="hand2", pady=10).pack(fill="x", padx=20, pady=16)
+    def open_manager():
+        win = tk.Toplevel(root); win.title("패키지 관리 — 폐기 / 연장"); win.configure(bg=BG)
+        win.geometry("760x560"); win.grab_set()
+        tk.Label(win, text="봉인한 패키지 관리", font=(FONT, 14, "bold"), bg=BG, fg=FG).pack(pady=(14, 2))
+        tk.Label(win, text="폐기하거나 만료일을 연장한 뒤, 아래 'revoke.json 저장'으로 내보내 Gist에 올리세요",
+                 font=(FONT, 9), bg=BG, fg=SUB).pack(pady=(0, 10))
+        canv = tk.Canvas(win, bg=BG, highlightthickness=0)
+        sb = tk.Scrollbar(win, command=canv.yview); canv.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y"); canv.pack(side="top", fill="both", expand=True, padx=14)
+        holder = tk.Frame(canv, bg=BG); canv.create_window((0, 0), window=holder, anchor="nw")
+
+        rows = core.ledger_all()
+        if not rows:
+            tk.Label(holder, text="아직 봉인한 패키지가 없습니다.", font=(FONT, 10),
+                     bg=BG, fg=SUB).pack(pady=20)
+        for r in rows:
+            pid = r.get("pkg_id", "")
+            fr = tk.Frame(holder, bg=CARD); fr.pack(fill="x", pady=5, padx=2)
+            top = tk.Frame(fr, bg=CARD); top.pack(fill="x", padx=12, pady=(8, 2))
+            tk.Label(top, text=r.get("title", ""), font=(FONT, 11, "bold"),
+                     bg=CARD, fg=FG).pack(side="left")
+            tk.Label(top, text="  %s" % (r.get("client", "") or "거래처 미기재"),
+                     font=(FONT, 9), bg=CARD, fg=SUB).pack(side="left")
+            tk.Label(top, text="ID %s · 만료 %s" % (pid, r.get("expiry", "") or "없음"),
+                     font=(FONT, 8), bg=CARD, fg=SUB).pack(side="right")
+            ctl = tk.Frame(fr, bg=CARD); ctl.pack(fill="x", padx=12, pady=(0, 8))
+            sv = tk.StringVar(value=r.get("status", "active"))
+
+            def mk_toggle(pid=pid, sv=sv, lbl=None):
+                def t():
+                    ns = "revoked" if sv.get() == "active" else "active"
+                    sv.set(ns); core.ledger_update(pid, status=ns)
+                    lbl.configure(text=("폐기됨" if ns == "revoked" else "활성"),
+                                  fg=(DANGER if ns == "revoked" else OK))
+                return t
+            st_lbl = tk.Label(ctl, text=("폐기됨" if sv.get() == "revoked" else "활성"),
+                              font=(FONT, 9, "bold"), bg=CARD,
+                              fg=(DANGER if sv.get() == "revoked" else OK), width=7)
+            st_lbl.pack(side="left")
+            btn = tk.Button(ctl, text="폐기 / 해제", font=(FONT, 9), bg=LINE, fg=FG,
+                            relief="flat", cursor="hand2", padx=8)
+            btn.configure(command=mk_toggle(pid, sv, st_lbl)); btn.pack(side="left", padx=8)
+            tk.Label(ctl, text="연장일", font=(FONT, 9), bg=CARD, fg=SUB).pack(side="left", padx=(16, 4))
+            ee = tk.Entry(ctl, font=(FONT, 9), bg=BG, fg=FG, relief="flat", width=12,
+                          insertbackground=FG, justify="center")
+            ee.insert(0, r.get("extend", "") or ""); ee.pack(side="left", ipady=2)
+
+            def mk_save(pid=pid, ee=ee):
+                def s():
+                    v = ee.get().strip()
+                    if v:
+                        try:
+                            datetime.datetime.strptime(v, "%Y-%m-%d")
+                        except Exception:
+                            messagebox.showwarning("관리", "연장일 형식 YYYY-MM-DD"); return
+                    core.ledger_update(pid, extend=v)
+                    messagebox.showinfo("관리", "저장됨")
+                return s
+            tk.Button(ctl, text="연장 저장", font=(FONT, 9), bg=LINE, fg=FG, relief="flat",
+                      cursor="hand2", padx=8, command=mk_save(pid, ee)).pack(side="left", padx=6)
+
+        holder.update_idletasks(); canv.configure(scrollregion=canv.bbox("all"))
+
+        def export():
+            p = filedialog.asksaveasfilename(title="revoke.json 저장", defaultextension=".json",
+                                             initialfile="revoke.json",
+                                             filetypes=[("JSON", "*.json")])
+            if not p:
+                return
+            nrev, next_ = core.ledger_export_revoke(p)
+            messagebox.showinfo("관리", "저장 완료\n\n폐기 %d건 · 연장 %d건\n%s\n\n"
+                                "이 파일 내용을 Gist(원격폐기 URL)에 붙여넣으면 적용됩니다."
+                                % (nrev, next_, p))
+        tk.Button(win, text="revoke.json 저장 (Gist에 올릴 파일)", font=(FONT, 11, "bold"),
+                  bg=ACCENT, fg="white", relief="flat", command=export, cursor="hand2",
+                  pady=8).pack(fill="x", padx=14, pady=12)
+
+    bbar = tk.Frame(root, bg=BG); bbar.pack(fill="x", padx=20, pady=16)
+    tk.Button(bbar, text="봉인하기", font=(FONT, 13, "bold"), bg=ACCENT, fg="white",
+              relief="flat", command=do_seal, cursor="hand2", pady=10).pack(side="left", fill="x", expand=True)
+    tk.Button(bbar, text="패키지 관리", font=(FONT, 11), bg=LINE, fg=FG,
+              relief="flat", command=open_manager, cursor="hand2", pady=10, padx=16).pack(side="left", padx=(10, 0))
 
     stub, where = find_stub_bytes()
     if not stub:
