@@ -1,0 +1,59 @@
+name: build-windows
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+    paths-ignore: ['**.md']
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: deps
+        run: |
+          python -m pip install -U pip
+          pip install -r requirements.txt
+          pip install pyinstaller==6.11.1
+          pip install "setuptools==70.3.0"
+
+      - name: build viewer stub
+        working-directory: build
+        run: pyinstaller viewer.spec --noconfirm --clean
+
+      - name: verify append (hard gate)
+        working-directory: build
+        run: python ci_verify_viewer.py
+
+      - name: build packager (embeds viewer)
+        working-directory: build
+        run: pyinstaller packager.spec --noconfirm --clean
+
+      - name: verify full pipeline (hard gate)
+        working-directory: build
+        run: python ci_verify_pipeline.py
+
+      - name: collect artifacts
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          Copy-Item build/dist/igSeal-Packager.exe out/igSeal-Packager.exe -Force
+          Copy-Item build/dist/igSeal-Viewer.exe  out/igSeal-Viewer.exe  -Force
+          Get-ChildItem out
+
+      - name: publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest-windows --cleanup-tag --yes 2>$null; $global:LASTEXITCODE=0
+          gh release create latest-windows out/igSeal-Packager.exe out/igSeal-Viewer.exe `
+            --title 'igSeal (Windows) latest' `
+            --notes 'igSeal 봉인 제작기 + 뷰어 스텁. commit ${{ github.sha }}'
