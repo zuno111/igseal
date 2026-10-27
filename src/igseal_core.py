@@ -15,7 +15,7 @@ header_json:
   - plaintext_json = { files: [ {name, size, data(b64)} ], expiry, title }
   - hmac = HMAC-SHA256(stub_secret, header의 hmac 제외 필드 canonical) — 평문 헤더 casual 변조 탐지용
 """
-import os, sys, json, base64, struct, hmac, hashlib, datetime, subprocess, uuid
+import os, sys, io, json, base64, struct, hmac, hashlib, datetime, subprocess, uuid
 import urllib.request
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -370,6 +370,63 @@ def ledger_export_revoke(out_path):
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump({"revoked": revoked, "extend": extend}, f, ensure_ascii=False, indent=2)
     return len(revoked), len(extend)
+
+
+# ----- 오디오 워터마크 (WAV, 표준 라이브러리) -----
+def _wm_bits(tag: str):
+    """tag -> 비트열. 프리앰블(1010) + 길이(8bit) + tag바이트."""
+    b = tag.encode("utf-8")[:8]
+    bits = [1, 0, 1, 0]
+    bits += [(len(b) >> i) & 1 for i in range(7, -1, -1)]
+    for by in b:
+        bits += [(by >> i) & 1 for i in range(7, -1, -1)]
+    return bits
+
+
+def audio_watermark_wav(data: bytes, tag: str, every_sec: float = 8.0) -> bytes:
+    """WAV 바이트에 거래처 식별 신호를 주기적으로 작게 섞는다. 실패 시 원본 반환.
+    비트 0=f0, 1=f1 의 짧은 톤을 FSK로 심음. 녹음해도 남는 가청대 저음량 신호."""
+    import wave, struct as _st, math
+    try:
+        bio = io.BytesIO(data)
+        w = wave.open(bio, "rb")
+        nch, sw, fr, nfr = w.getnchannels(), w.getsampwidth(), w.getframerate(), w.getnframes()
+        raw = w.readframes(nfr); w.close()
+        if sw != 2:   # 16bit PCM만 처리
+            return data
+        import array
+        samples = array.array("h"); samples.frombytes(raw)
+        bits = _wm_bits(tag)
+        f0, f1 = 1500.0, 2200.0
+        bit_ms = 40
+        bit_n = int(fr * bit_ms / 1000)
+        amp = 900   # 16bit(32767) 대비 약 -31dB, 저음량
+        period = int(fr * every_sec)
+        total_frames = len(samples) // nch
+        pos = fr  # 1초 뒤부터 시작
+        while pos + len(bits) * bit_n < total_frames:
+            idx = pos
+            for bit in bits:
+                f = f1 if bit else f0
+                for k in range(bit_n):
+                    s = int(amp * math.sin(2 * math.pi * f * k / fr))
+                    for ch in range(nch):
+                        j = (idx + k) * nch + ch
+                        if 0 <= j < len(samples):
+                            v = samples[j] + s
+                            samples[j] = max(-32768, min(32767, v))
+                idx += bit_n
+            pos += period
+        out = io.BytesIO()
+        ww = wave.open(out, "wb")
+        ww.setnchannels(nch); ww.setsampwidth(sw); ww.setframerate(fr)
+        ww.writeframes(samples.tobytes()); ww.close()
+        return out.getvalue()
+    except Exception:
+        return data
+
+
+AUDIO_EXT = {".wav", ".mp3", ".flac", ".m4a", ".aac", ".ogg", ".wma"}
 
 
 # ----- 자기삭제 -----

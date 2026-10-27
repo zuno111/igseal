@@ -244,6 +244,7 @@ def run_gui():
 
     # ---- 메인 뷰어 ----
     data = state["data"]
+    data_pkg_id = data.get("pkg_id") or ""
     files = data["files"]
     watermark = data.get("watermark") or ""
     state["title"] = data["title"]
@@ -426,12 +427,17 @@ def run_gui():
             path = os.path.join(d, os.path.basename(name))
             ext = os.path.splitext(name)[1].lower()
             wrote = False
-            # 가능하면 워터마크를 박아서 내보냄 (이미지/PDF)
+            # 가능하면 워터마크를 박아서 내보냄 (이미지/PDF/오디오)
             if watermark:
                 try:
                     if ext in IMG_EXT and HAVE_PIL:
                         im = _wm(Image.open(io.BytesIO(data)).convert("RGB"))
                         im.save(path)
+                        wrote = True
+                    elif ext == ".wav":
+                        wmd = core.audio_watermark_wav(data, (data_pkg_id or watermark)[:8])
+                        with open(path, "wb") as f:
+                            f.write(wmd)
                         wrote = True
                     elif ext == ".pdf" and HAVE_PDF:
                         doc = fitz.open(stream=data, filetype="pdf")

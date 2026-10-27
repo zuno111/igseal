@@ -155,5 +155,38 @@ check("revoke.json 내용", exp["revoked"] == ["A1"] and exp["extend"] == {"B2":
 c.ledger_add({"pkg_id": "A1", "title": "A재봉인", "client": "갑", "expiry": "2027-01-01", "status": "active", "extend": ""})
 check("중복 pkg_id 갱신", len(c.ledger_all()) == 2)
 
+# 13. 오디오 워터마크 (WAV)
+import wave as _wave, array as _arr, math as _m, io as _io
+fr = 44100
+sm = _arr.array("h")
+for i in range(fr * 12):
+    v = int(8000 * _m.sin(2 * _m.pi * 440 * i / fr))
+    sm.append(v); sm.append(v)
+b = _io.BytesIO(); w = _wave.open(b, "wb"); w.setnchannels(2); w.setsampwidth(2); w.setframerate(fr)
+w.writeframes(sm.tobytes()); w.close()
+orig_wav = b.getvalue()
+wmd = c.audio_watermark_wav(orig_wav, "TAG12345", every_sec=8.0)
+check("오디오 워터마크 길이 보존", len(wmd) == len(orig_wav))
+check("오디오 워터마크 변경됨", wmd != orig_wav)
+
+def _goertzel(sig, f, fr):
+    w0 = 2 * _m.pi * f / fr; coeff = 2 * _m.cos(w0); p1 = p2 = 0.0
+    for x in sig:
+        s = x + coeff * p1 - p2; p2 = p1; p1 = s
+    return p2 * p2 + p1 * p1 - coeff * p1 * p2
+w2 = _wave.open(_io.BytesIO(wmd), "rb"); raw = w2.readframes(w2.getnframes()); w2.close()
+s2 = _arr.array("h"); s2.frombytes(raw)
+mono = [s2[i * 2] for i in range(len(s2) // 2)]
+# 원본에도 1500Hz 에너지가 있으므로, 워터마크 삽입 전/후 같은 구간을 비교
+o2 = _arr.array("h"); o2.frombytes(orig_wav[44:])
+omono = [o2[i * 2] for i in range(len(o2) // 2)]
+seg_before = omono[fr:fr + 1764]
+seg_after = mono[fr:fr + 1764]
+e_before = _goertzel(seg_before, 1500, fr) + _goertzel(seg_before, 2200, fr)
+e_after = _goertzel(seg_after, 1500, fr) + _goertzel(seg_after, 2200, fr)
+check("워터마크 삽입으로 신호 에너지 증가", e_after > e_before * 5)
+# 비WAV/손상은 원본 반환
+check("비WAV는 원본 반환", c.audio_watermark_wav(b"not a wav", "T") == b"not a wav")
+
 print("\n" + ("ALL PASS" if ok else "SOME FAILED"))
 sys.exit(0 if ok else 1)
