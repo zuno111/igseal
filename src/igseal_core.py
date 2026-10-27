@@ -427,6 +427,75 @@ def audio_watermark_wav(data: bytes, tag: str, every_sec: float = 8.0) -> bytes:
 
 
 AUDIO_EXT = {".wav", ".mp3", ".flac", ".m4a", ".aac", ".ogg", ".wma"}
+VIDEO_EXT = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v", ".wmv", ".flv"}
+MESH_EXT = {".obj", ".stl", ".ply", ".glb", ".gltf", ".off", ".3mf", ".dae", ".fbx"}
+
+
+# ----- 3D 메시 소프트웨어 렌더 (OpenGL 불필요) -----
+def render_mesh_image(mesh, size=520, angle_x=0.5, angle_y=0.6, watermark=""):
+    """trimesh 메시 -> PIL Image (numpy 소프트웨어 램버트 셰이딩 + 페인터 알고리즘)."""
+    import numpy as np
+    from PIL import Image, ImageDraw, ImageFont
+    v = np.asarray(mesh.vertices, dtype=float).copy()
+    f = np.asarray(mesh.faces)
+    if len(v) == 0 or len(f) == 0:
+        return Image.new("RGB", (size, size), (20, 22, 28))
+    v -= v.mean(axis=0)
+    v /= (np.abs(v).max() + 1e-9)
+    cx, sx = np.cos(angle_x), np.sin(angle_x)
+    cy, sy = np.cos(angle_y), np.sin(angle_y)
+    Rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]])
+    Ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]])
+    v = v @ Rx.T @ Ry.T
+    tri = v[f]
+    n = np.cross(tri[:, 1] - tri[:, 0], tri[:, 2] - tri[:, 0])
+    n = n / (np.linalg.norm(n, axis=1, keepdims=True) + 1e-9)
+    light = np.array([0.3, 0.4, 0.85])
+    shade = np.clip(n @ light, 0.15, 1.0)
+    scr = ((v[:, :2] * 0.42 + 0.5) * size)
+    scr[:, 1] = size - scr[:, 1]
+    zc = tri[:, :, 2].mean(axis=1)
+    order = np.argsort(zc)
+    img = Image.new("RGB", (size, size), (20, 22, 28))
+    dr = ImageDraw.Draw(img)
+    for i in order:
+        pts = [tuple(scr[idx]) for idx in f[i]]
+        c = int(60 + shade[i] * 180)
+        dr.polygon(pts, fill=(c, int(c * 0.95), int(c * 1.05)))
+    if watermark:
+        try:
+            font = None
+            for fp in ("malgun.ttf", "arial.ttf", "DejaVuSans.ttf"):
+                try:
+                    font = ImageFont.truetype(fp, 18); break
+                except Exception:
+                    continue
+            if font is None:
+                font = ImageFont.load_default()
+            dr.text((12, size - 26), watermark, font=font, fill=(255, 255, 255, 80))
+        except Exception:
+            pass
+    return img
+
+
+def load_mesh_from_bytes(data, ext):
+    """바이트 -> trimesh. 씬이면 합침. 실패시 None."""
+    import trimesh
+    bio = io.BytesIO(data)
+    try:
+        obj = trimesh.load(bio, file_type=ext.lstrip(".").lower(), force="mesh")
+    except Exception:
+        try:
+            bio.seek(0)
+            obj = trimesh.load(bio, file_type=ext.lstrip(".").lower())
+        except Exception:
+            return None
+    if hasattr(obj, "vertices"):
+        return obj
+    try:
+        return obj.dump(concatenate=True)
+    except Exception:
+        return None
 
 
 # ----- 자기삭제 -----

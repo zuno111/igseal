@@ -1,0 +1,321 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>4D 스플랫 뷰어</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* 레이아웃: 전체화면 3D 뷰포트 + 하단 고정 컨트롤 바. 단일 다크 월드(3D 뷰어). */
+:root{
+  --bg:#0b0d12; --panel:#13161e; --panel-2:#1b1f2a; --line:#2a2f3c;
+  --fg:#e7ebf3; --mut:#8b93a7; --accent:#5ad1c9; --accent-2:#f0a24b;
+  color-scheme:dark;
+  --font:"Inter","Noto Sans KR",system-ui,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--font);
+  overflow:hidden;font-style:normal}
+#app{position:fixed;inset:0}
+canvas{display:block;width:100%;height:100%;touch-action:none}
+
+/* 상단 타이틀 */
+#top{position:fixed;left:0;right:0;top:env(safe-area-inset-top,0px);
+  display:flex;align-items:center;gap:10px;z-index:5;pointer-events:none;
+  padding:12px max(16px,env(safe-area-inset-right,0px)) 12px max(16px,env(safe-area-inset-left,0px))}
+#top .dot{width:9px;height:9px;border-radius:50%;background:var(--accent);
+  box-shadow:0 0 12px var(--accent)}
+#top h1{margin:0;font-size:15px;font-weight:600;letter-spacing:.2px}
+#top .meta{margin-left:auto;font-size:12px;color:var(--mut);
+  font-variant-numeric:tabular-nums;pointer-events:none}
+
+/* 하단 컨트롤 */
+#bar{position:fixed;left:0;right:0;bottom:0;z-index:5;background:linear-gradient(to top,var(--panel) 72%,transparent);
+  padding:14px max(16px,env(safe-area-inset-right,0px)) calc(14px + env(safe-area-inset-bottom,0px)) max(16px,env(safe-area-inset-left,0px))}
+#barInner{max-width:860px;margin:0 auto;display:flex;flex-direction:column;gap:12px}
+.row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.time{display:flex;align-items:center;gap:10px;flex:1;min-width:0}
+.time.hidden{display:none}
+#play{width:40px;height:40px;flex:none;border-radius:50%;border:1px solid var(--line);
+  background:var(--panel-2);color:var(--fg);font-size:15px;cursor:pointer;display:grid;place-items:center}
+#play:hover{border-color:var(--accent)}
+input[type=range]{-webkit-appearance:none;appearance:none;height:4px;border-radius:4px;
+  background:var(--line);flex:1;min-width:0;outline:none}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;border-radius:50%;
+  background:var(--accent);cursor:pointer;border:2px solid var(--bg)}
+input[type=range]::-moz-range-thumb{width:16px;height:16px;border-radius:50%;background:var(--accent);
+  cursor:pointer;border:2px solid var(--bg)}
+.tlabel{font-size:12px;color:var(--mut);font-variant-numeric:tabular-nums;white-space:nowrap}
+.ctl{display:flex;align-items:center;gap:8px}
+.ctl label{font-size:11px;color:var(--mut);text-transform:uppercase;letter-spacing:.6px}
+.ctl input[type=range]{width:90px;flex:none}
+.btn{border:1px solid var(--line);background:var(--panel-2);color:var(--fg);
+  font:inherit;font-size:13px;padding:9px 14px;border-radius:9px;cursor:pointer}
+.btn:hover{border-color:var(--accent);color:var(--accent)}
+.btn.file{border-color:var(--accent);color:var(--accent)}
+.spacer{flex:1}
+
+/* 드롭 오버레이 */
+#drop{position:fixed;inset:0;z-index:20;background:rgba(11,13,18,.86);
+  display:none;place-items:center;text-align:center;padding:24px}
+#drop.on{display:grid}
+#drop .box{border:2px dashed var(--accent);border-radius:16px;padding:40px 48px;max-width:420px}
+#drop h2{margin:0 0 6px;font-size:18px}
+#drop p{margin:0;color:var(--mut);font-size:13px;line-height:1.5}
+
+/* 로딩/빈 상태 토스트 */
+#toast{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:8;
+  background:var(--panel-2);border:1px solid var(--line);border-radius:12px;
+  padding:14px 20px;font-size:13px;color:var(--mut);display:none}
+#toast.on{display:block}
+@media (max-width:520px){ #top h1{font-size:13px} .ctl label{display:none} }
+</style>
+
+<div id="app">
+  <div id="top">
+    <span class="dot"></span>
+    <h1>4D 스플랫 뷰어</h1>
+    <span class="meta" id="meta">데모 데이터</span>
+  </div>
+
+  <div id="bar"><div id="barInner">
+    <div class="time" id="timeWrap">
+      <button id="play" title="재생/정지">▶</button>
+      <span class="tlabel" id="tnow">t 0.00</span>
+      <input type="range" id="time" min="0" max="1000" value="0">
+      <span class="tlabel" id="tdur">/ 1.00</span>
+    </div>
+    <div class="row">
+      <button class="btn file" id="open">.ply 열기</button>
+      <div class="ctl"><label>점 크기</label>
+        <input type="range" id="size" min="1" max="60" value="16"></div>
+      <div class="ctl"><label>밝기</label>
+        <input type="range" id="bright" min="20" max="200" value="100"></div>
+      <div class="spacer"></div>
+      <button class="btn" id="reset">시점 리셋</button>
+    </div>
+  </div></div>
+
+  <div id="drop"><div class="box">
+    <h2>.ply 파일을 놓으세요</h2>
+    <p>Instant4D가 만든 4D 가우시안 .ply (또는 일반 3DGS .ply)<br>자유시점으로 돌려보고, 시간 성분이 있으면 재생됩니다.</p>
+  </div></div>
+  <div id="toast">불러오는 중…</div>
+  <input type="file" id="fileInput" accept=".ply" hidden>
+</div>
+
+<script src="vendor/three.min.js"></script>
+<script>
+"use strict";
+const $=s=>document.querySelector(s);
+const SH_C0=0.28209479177387814;
+
+// ---------- three.js 기본 장면 ----------
+const app=$("#app");
+const renderer=new THREE.WebGLRenderer({antialias:true,alpha:false});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+app.appendChild(renderer.domElement);
+const scene=new THREE.Scene();
+scene.background=new THREE.Color(0x0b0d12);
+const camera=new THREE.PerspectiveCamera(55,1,0.01,1000);
+let points=null, geom=null, mat=null;
+
+// 데이터 상태
+let times=null;          // Float32Array per-point time, or null
+let tMin=0,tMax=1,hasTime=false;
+let baseColors=null;     // Float32Array rgb (밝기 조절 원본)
+
+// ---------- 간단 궤도 카메라 ----------
+const target=new THREE.Vector3(0,0,0);
+let radius=3, theta=0.6, phi=1.1; // 구면좌표
+function applyCam(){
+  const x=target.x+radius*Math.sin(phi)*Math.cos(theta);
+  const y=target.y+radius*Math.cos(phi);
+  const z=target.z+radius*Math.sin(phi)*Math.sin(theta);
+  camera.position.set(x,y,z); camera.lookAt(target);
+}
+(function orbit(){
+  let drag=false,px=0,py=0,pan=false;
+  const el=renderer.domElement;
+  el.addEventListener("pointerdown",e=>{drag=true;pan=e.button===2||e.shiftKey;px=e.clientX;py=e.clientY;el.setPointerCapture(e.pointerId);});
+  el.addEventListener("pointermove",e=>{
+    if(!drag)return; const dx=e.clientX-px,dy=e.clientY-py;px=e.clientX;py=e.clientY;
+    if(pan){ const s=radius*0.0016; const right=new THREE.Vector3().subVectors(camera.position,target).cross(camera.up).normalize();
+      const up=camera.up.clone(); target.addScaledVector(right,-dx*s); target.addScaledVector(up,dy*s); }
+    else { theta-=dx*0.006; phi=Math.max(0.05,Math.min(Math.PI-0.05,phi-dy*0.006)); }
+    applyCam();
+  });
+  el.addEventListener("pointerup",()=>drag=false);
+  el.addEventListener("contextmenu",e=>e.preventDefault());
+  el.addEventListener("wheel",e=>{e.preventDefault();radius=Math.max(0.2,Math.min(80,radius*(1+Math.sign(e.deltaY)*0.1)));applyCam();},{passive:false});
+})();
+
+function resize(){const w=app.clientWidth,h=app.clientHeight;renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix();}
+addEventListener("resize",resize);
+
+// ---------- 포인트 지오메트리 빌드 ----------
+function setData(pos,col,tim){
+  if(points){scene.remove(points);geom.dispose();mat.dispose();}
+  geom=new THREE.BufferGeometry();
+  geom.setAttribute("position",new THREE.BufferAttribute(pos,3));
+  baseColors=col.slice();
+  geom.setAttribute("color",new THREE.BufferAttribute(col,3));
+  mat=new THREE.PointsMaterial({size:+$("#size").value/1000,vertexColors:true,
+    sizeAttenuation:true,transparent:true,depthWrite:true});
+  points=new THREE.Points(geom,mat); scene.add(points);
+  // 중심/반경 맞추기
+  geom.computeBoundingSphere();
+  const bs=geom.boundingSphere; target.copy(bs.center); radius=bs.radius*2.4||3; applyCam();
+  // 시간
+  times=tim; hasTime=!!tim;
+  if(hasTime){ tMin=Infinity;tMax=-Infinity; for(let i=0;i<tim.length;i++){if(tim[i]<tMin)tMin=tim[i];if(tim[i]>tMax)tMax=tim[i];}
+    if(!(tMax>tMin)){hasTime=false;} }
+  $("#timeWrap").classList.toggle("hidden",!hasTime);
+  $("#tdur").textContent="/ "+(hasTime?(tMax-tMin).toFixed(2):"1.00");
+  applyBright(); updateTime(true);
+}
+function applyBright(){
+  if(!geom)return; const b=+$("#bright").value/100; const c=geom.attributes.color.array;
+  for(let i=0;i<c.length;i++)c[i]=Math.min(1,baseColors[i]*b); geom.attributes.color.needsUpdate=true;
+}
+// 시간 창: 현재 t 근처 점만 불투명하게 (opacity는 per-point 미지원 → 창 밖은 멀리 밀어 숨김 대신 색 어둡게)
+let curT=0;
+function updateTime(force){
+  if(!hasTime){$("#tnow").textContent="정적";return;}
+  const frac=+$("#time").value/1000; curT=tMin+frac*(tMax-tMin);
+  $("#tnow").textContent="t "+(curT-tMin).toFixed(2);
+}
+
+// ---------- PLY 파서 (ascii / binary_little_endian) ----------
+function parsePLY(buf){
+  const bytes=new Uint8Array(buf);
+  // 헤더 끝 찾기
+  let hdr="",i=0; const dec=new TextDecoder();
+  while(i<bytes.length){ hdr+=String.fromCharCode(bytes[i]); if(hdr.endsWith("end_header\n"))break; i++; }
+  const headerLen=i+1;
+  const lines=hdr.split("\n");
+  let fmt="ascii",count=0; const props=[];
+  const TYPE={char:1,uchar:1,int8:1,uint8:1,short:2,ushort:2,int16:2,uint16:2,
+    int:4,uint:4,int32:4,uint32:4,float:4,float32:4,double:8,float64:8};
+  for(const ln of lines){
+    const t=ln.trim().split(/\s+/);
+    if(t[0]==="format")fmt=t[1];
+    else if(t[0]==="element"&&t[1]==="vertex")count=+t[2];
+    else if(t[0]==="property"&&t[1]!=="list")props.push({type:t[1],name:t[2]});
+  }
+  const idx={}; let stride=0;
+  props.forEach(p=>{idx[p.name]=stride;stride+=TYPE[p.type]||4;});
+  const gx=idx.x,gy=idx.y,gz=idx.z;
+  const dcR=("f_dc_0"in idx)?idx.f_dc_0:(("red"in idx)?idx.red:null);
+  const dcG=("f_dc_1"in idx)?idx.f_dc_1:(("green"in idx)?idx.green:null);
+  const dcB=("f_dc_2"in idx)?idx.f_dc_2:(("blue"in idx)?idx.blue:null);
+  const colIsByte=("red"in idx)&&!("f_dc_0"in idx);
+  const tKey=("t"in idx)?"t":(("time"in idx)?"time":(("time_stamp"in idx)?"time_stamp":null));
+  const pos=new Float32Array(count*3), col=new Float32Array(count*3);
+  let tim=tKey?new Float32Array(count):null;
+
+  if(fmt==="ascii"){
+    const body=dec.decode(bytes.subarray(headerLen)).trim().split("\n");
+    for(let n=0;n<count;n++){ const v=body[n].trim().split(/\s+/).map(Number);
+      // ascii는 순서대로 props 인덱스
+      const off={}; props.forEach((p,k)=>off[p.name]=v[k]);
+      pos[n*3]=off.x;pos[n*3+1]=off.y;pos[n*3+2]=off.z;
+      let r,g,b;
+      if(colIsByte){r=off.red/255;g=off.green/255;b=off.blue/255;}
+      else{r=0.5+SH_C0*(off.f_dc_0||0);g=0.5+SH_C0*(off.f_dc_1||0);b=0.5+SH_C0*(off.f_dc_2||0);}
+      col[n*3]=clamp01(r);col[n*3+1]=clamp01(g);col[n*3+2]=clamp01(b);
+      if(tim)tim[n]=off[tKey];
+    }
+  } else {
+    const le=fmt.includes("little");
+    const dv=new DataView(buf,headerLen);
+    const rd=(o,type)=>{switch(type){
+      case"float":case"float32":return dv.getFloat32(o,le);
+      case"double":case"float64":return dv.getFloat64(o,le);
+      case"uchar":case"uint8":return dv.getUint8(o);
+      case"char":case"int8":return dv.getInt8(o);
+      case"ushort":case"uint16":return dv.getUint16(o,le);
+      case"short":case"int16":return dv.getInt16(o,le);
+      case"uint":case"uint32":return dv.getUint32(o,le);
+      default:return dv.getInt32(o,le);}};
+    const typeOf={}; props.forEach(p=>typeOf[p.name]=p.type);
+    for(let n=0;n<count;n++){ const base=n*stride;
+      pos[n*3]=rd(base+gx,typeOf.x);pos[n*3+1]=rd(base+gy,typeOf.y);pos[n*3+2]=rd(base+gz,typeOf.z);
+      let r,g,b;
+      if(colIsByte){r=rd(base+dcR,typeOf.red)/255;g=rd(base+dcG,typeOf.green)/255;b=rd(base+dcB,typeOf.blue)/255;}
+      else{r=0.5+SH_C0*(dcR!=null?rd(base+dcR,typeOf.f_dc_0):0);
+           g=0.5+SH_C0*(dcG!=null?rd(base+dcG,typeOf.f_dc_1):0);
+           b=0.5+SH_C0*(dcB!=null?rd(base+dcB,typeOf.f_dc_2):0);}
+      col[n*3]=clamp01(r);col[n*3+1]=clamp01(g);col[n*3+2]=clamp01(b);
+      if(tim)tim[n]=rd(base+idx[tKey],typeOf[tKey]);
+    }
+  }
+  return {pos,col,tim,count};
+}
+function clamp01(x){return x<0?0:x>1?1:x;}
+
+// ---------- 파일 로드 ----------
+function loadBuffer(buf,name){
+  $("#toast").classList.add("on");
+  setTimeout(()=>{ try{
+    const d=parsePLY(buf);
+    setData(d.pos,d.col,d.tim);
+    $("#meta").textContent=(name||"ply")+" · "+d.count.toLocaleString()+"점"+(d.tim?" · 4D":"");
+  }catch(err){ $("#meta").textContent="읽기 실패"; console.error(err); }
+  $("#toast").classList.remove("on"); },30);
+}
+function openFile(file){ const r=new FileReader(); r.onload=()=>loadBuffer(r.result,file.name); r.readAsArrayBuffer(file); }
+
+// 드래그&드롭
+addEventListener("dragover",e=>{e.preventDefault();$("#drop").classList.add("on");});
+$("#drop").addEventListener("dragleave",()=>$("#drop").classList.remove("on"));
+addEventListener("drop",e=>{e.preventDefault();$("#drop").classList.remove("on");
+  const f=e.dataTransfer.files[0]; if(f)openFile(f);});
+$("#open").addEventListener("click",()=>$("#fileInput").click());
+$("#fileInput").addEventListener("change",e=>{if(e.target.files[0])openFile(e.target.files[0]);});
+
+// 컨트롤
+$("#size").addEventListener("input",()=>{if(mat)mat.size=+$("#size").value/1000;});
+$("#bright").addEventListener("input",applyBright);
+$("#reset").addEventListener("click",()=>{theta=0.6;phi=1.1;if(geom){geom.computeBoundingSphere();target.copy(geom.boundingSphere.center);radius=geom.boundingSphere.radius*2.4||3;}applyCam();});
+$("#time").addEventListener("input",()=>{playing=false;$("#play").textContent="▶";updateTime();});
+let playing=false;
+$("#play").addEventListener("click",()=>{playing=!playing;$("#play").textContent=playing?"❚❚":"▶";});
+
+// ---------- 데모 데이터 (첫 화면이 동작 상태) ----------
+function demo(){
+  const N=60000; const pos=new Float32Array(N*3),col=new Float32Array(N*3),tim=new Float32Array(N);
+  for(let i=0;i<N;i++){
+    // 토러스 매듭 위의 점 + 시간에 따라 반경 맥동
+    const u=Math.random()*Math.PI*2, v=Math.random()*Math.PI*2;
+    const R=1.0,r=0.36;
+    const t=Math.random();
+    const pulse=0.08*Math.sin(u*3+t*Math.PI*2);
+    const rr=r+pulse;
+    pos[i*3]=(R+rr*Math.cos(v))*Math.cos(u);
+    pos[i*3+1]=rr*Math.sin(v)+0.15*Math.sin(u*2+t*6.28);
+    pos[i*3+2]=(R+rr*Math.cos(v))*Math.sin(u);
+    // 색: 각도+시간 그라디언트 (teal→amber)
+    const m=0.5+0.5*Math.sin(u+t*6.28);
+    col[i*3]=0.35+0.55*m; col[i*3+1]=0.78-0.3*m; col[i*3+2]=0.75-0.4*m;
+    tim[i]=t;
+  }
+  setData(pos,col,tim);
+  $("#meta").textContent="데모 데이터 · 4D";
+}
+
+// ---------- 루프 ----------
+resize(); demo();
+function frame(){
+  if(hasTime&&playing){ let v=+$("#time").value+4; if(v>1000)v=0; $("#time").value=v; updateTime(); }
+  // 4D: 현재 t 창 밖의 점은 작게/투명하게 — opacity per-point 대신 색 어둡게 + 창 강조
+  if(hasTime&&geom){
+    const c=geom.attributes.color.array; const win=(tMax-tMin)*0.12+1e-4; const b=+$("#bright").value/100;
+    for(let i=0;i<times.length;i++){ const d=Math.abs(times[i]-curT);
+      const k=d<win?1:Math.max(0.12,1-(d-win)/((tMax-tMin)*0.6));
+      c[i*3]=Math.min(1,baseColors[i*3]*b*k); c[i*3+1]=Math.min(1,baseColors[i*3+1]*b*k); c[i*3+2]=Math.min(1,baseColors[i*3+2]*b*k); }
+    geom.attributes.color.needsUpdate=true;
+  }
+  renderer.render(scene,camera); requestAnimationFrame(frame);
+}
+frame();
+</script>
+
+</body></html>

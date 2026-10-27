@@ -1,3 +1,7 @@
 cryptography
 pillow
 PyMuPDF
+numpy
+imageio
+imageio-ffmpeg
+trimesh

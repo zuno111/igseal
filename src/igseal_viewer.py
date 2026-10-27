@@ -77,6 +77,18 @@ def run_gui():
         HAVE_PDF = True
     except Exception:
         HAVE_PDF = False
+    try:
+        import imageio.v3 as iio3
+        import imageio_ffmpeg  # 정적 ffmpeg 내장
+        HAVE_VIDEO = True
+    except Exception:
+        HAVE_VIDEO = False
+    try:
+        import trimesh  # noqa
+        import numpy as _np  # noqa
+        HAVE_MESH = True
+    except Exception:
+        HAVE_MESH = False
 
     self_path = _self_path()
     payload = core.read_payload_from_file(self_path)
@@ -310,8 +322,10 @@ def run_gui():
     prev = tk.Frame(right, bg=CARD); prev.pack(fill="both", expand=True, padx=16, pady=(0, 16))
 
     img_ref = {"img": None}
+    play = {"stop": False}   # 영상 재생 루프 중단 플래그
 
     def clear_prev():
+        play["stop"] = True
         for w in prev.winfo_children():
             w.destroy()
         img_ref["img"] = None
@@ -420,8 +434,131 @@ def run_gui():
             tk.Label(prev, text="PDF 렌더 실패: %s" % e, font=(FONT, 10),
                      bg=CARD, fg=SUB).pack(expand=True)
 
+    def show_video(data, name):
+        clear_prev()
+        play["stop"] = False
+        if not (HAVE_VIDEO and HAVE_PIL):
+            tk.Label(prev, text="영상 미리보기 모듈이 없습니다", font=(FONT, 11),
+                     bg=CARD, fg=SUB).pack(expand=True)
+            return
+        # ffmpeg 가 파일 경로를 요구하므로 숨김 임시폴더에 잠깐 두고, 재생 후 삭제
+        import tempfile
+        d = workspace()
+        vpath = os.path.join(d, "_v" + os.path.splitext(name)[1].lower())
+        try:
+            with open(vpath, "wb") as f:
+                f.write(data)
+            try:
+                os.chmod(vpath, __import__("stat").S_IREAD)
+            except Exception:
+                pass
+        except Exception as e:
+            tk.Label(prev, text="영상 준비 실패: %s" % e, bg=CARD, fg=SUB,
+                     font=(FONT, 10)).pack(expand=True); return
+
+        wrap = tk.Frame(prev, bg=CARD); wrap.pack(fill="both", expand=True)
+        canv = tk.Label(wrap, bg="#000"); canv.pack(fill="both", expand=True)
+        bar = tk.Frame(wrap, bg=CARD); bar.pack(fill="x")
+        st = {"playing": True, "meta": None, "reader": None}
+
+        def toggle():
+            st["playing"] = not st["playing"]
+            pb.configure(text="❚❚ 일시정지" if st["playing"] else "▶ 재생")
+            if st["playing"]:
+                loop()
+        pb = tk.Button(bar, text="❚❚ 일시정지", font=(FONT, 9), bg=LINE, fg=FG,
+                       relief="flat", command=toggle, cursor="hand2", padx=10)
+        pb.pack(side="left", padx=6, pady=6)
+        info = tk.Label(bar, text="재생 중...", font=(FONT, 9), bg=CARD, fg=SUB)
+        info.pack(side="left")
+
+        try:
+            meta = iio3.immeta(vpath, plugin="pyav")
+            fps = float(meta.get("fps", 24)) or 24
+        except Exception:
+            fps = 24.0
+        delay = max(15, int(1000 / fps))
+        frames_iter = {"it": None}
+
+        def _open_iter():
+            frames_iter["it"] = iio3.imiter(vpath, plugin="pyav")
+
+        try:
+            _open_iter()
+        except Exception as e:
+            tk.Label(prev, text="영상 디코드 실패: %s" % e, bg=CARD, fg=SUB,
+                     font=(FONT, 10)).pack(expand=True); return
+
+        def loop():
+            if play["stop"] or not st["playing"]:
+                return
+            try:
+                frame = next(frames_iter["it"])
+            except StopIteration:
+                _open_iter()  # 반복 재생
+                try:
+                    frame = next(frames_iter["it"])
+                except Exception:
+                    return
+            except Exception:
+                return
+            try:
+                from PIL import Image as _I
+                im = _I.fromarray(frame)
+                cw = max(canv.winfo_width(), 320); ch = max(canv.winfo_height(), 240)
+                im.thumbnail((cw, ch))
+                im = _wm(im)
+                ph = ImageTk.PhotoImage(im)
+                img_ref["img"] = ph
+                canv.configure(image=ph)
+            except Exception:
+                pass
+            if not play["stop"] and st["playing"]:
+                prev.after(delay, loop)
+        prev.after(60, loop)
+
+    def show_mesh(data, name):
+        clear_prev()
+        if not (HAVE_MESH and HAVE_PIL):
+            tk.Label(prev, text="3D 미리보기 모듈이 없습니다", font=(FONT, 11),
+                     bg=CARD, fg=SUB).pack(expand=True)
+            return
+        ext = os.path.splitext(name)[1].lower()
+        mesh = core.load_mesh_from_bytes(data, ext)
+        if mesh is None:
+            tk.Label(prev, text="3D 파일을 열 수 없습니다 (%s)" % ext, font=(FONT, 11),
+                     bg=CARD, fg=SUB).pack(expand=True)
+            return
+        lbl = tk.Label(prev, bg=CARD); lbl.pack(fill="both", expand=True)
+        hint = tk.Label(prev, text="드래그로 회전 · 내부 렌더(추출 불가)", font=(FONT, 8),
+                        bg=CARD, fg=SUB); hint.pack(side="bottom", pady=4)
+        ang = {"x": 0.5, "y": 0.6, "lx": 0, "ly": 0}
+
+        def draw():
+            try:
+                sz = min(max(lbl.winfo_width(), 300), max(lbl.winfo_height(), 300))
+                sz = min(sz, 640) or 520
+                im = core.render_mesh_image(mesh, size=sz, angle_x=ang["x"],
+                                            angle_y=ang["y"], watermark=watermark)
+                ph = ImageTk.PhotoImage(im); img_ref["img"] = ph
+                lbl.configure(image=ph)
+            except Exception as e:
+                lbl.configure(text="3D 렌더 실패: %s" % e)
+
+        def on_down(e):
+            ang["lx"], ang["ly"] = e.x, e.y
+        def on_drag(e):
+            ang["y"] += (e.x - ang["lx"]) * 0.01
+            ang["x"] += (e.y - ang["ly"]) * 0.01
+            ang["lx"], ang["ly"] = e.x, e.y
+            draw()
+        lbl.bind("<Button-1>", on_down)
+        lbl.bind("<B1-Motion>", on_drag)
+        lbl.bind("<Button-3>", block)
+        prev.after(60, draw)
+
     def open_native(name, data):
-        """전문 포맷: 임시 작업폴더에 풀어 거래처의 해당 프로그램으로 열기. 닫으면 삭제."""
+        """지원 안 되는 전문 포맷: 임시 작업폴더에 풀어 거래처의 해당 프로그램으로 열기. 닫으면 삭제."""
         try:
             d = workspace()
             path = os.path.join(d, os.path.basename(name))
@@ -479,7 +616,7 @@ def run_gui():
                  bg=CARD, fg=FG).pack()
         tk.Label(f, text="%s · %s" % (name, _fmt(size)), font=(FONT, 9),
                  bg=CARD, fg=SUB).pack(pady=(4, 2))
-        tk.Label(f, text="CAD · 3D · 영상 등은 거래처 PC의 해당 프로그램으로 엽니다",
+        tk.Label(f, text="CAD 등 미지원 포맷은 거래처 PC의 해당 프로그램으로 엽니다",
                  font=(FONT, 9), bg=CARD, fg=SUB).pack(pady=(2, 14))
         tk.Button(f, text="연결된 프로그램으로 열기", font=(FONT, 11, "bold"),
                   bg=ACCENT, fg="white", relief="flat", padx=16, pady=8, cursor="hand2",
@@ -509,6 +646,10 @@ def run_gui():
             root.after(30, lambda: show_image(data, name))
         elif ext == ".pdf":
             show_pdf(data)
+        elif ext in core.VIDEO_EXT:
+            show_video(data, name)
+        elif ext in core.MESH_EXT:
+            show_mesh(data, name)
         else:
             show_other(name, len(data), data)
 

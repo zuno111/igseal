@@ -1,0 +1,864 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#fff;color:#000}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>WebMax</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<style>
+/* 레이아웃: 상단 메뉴바 / 좌 툴바 · 중앙 뷰포트 · 우 패널 / 하단 상태바 — DCC 다크 단일 테마 */
+:root{
+  --bg:#1b1d21; --panel:#26282e; --panel2:#2d3037; --line:#3a3d45;
+  --fg:#d6d9de; --muted:#8b909a; --accent:#f08a3c; --accent2:#4a9eda;
+  --ok:#5fb67a; --warn:#e0b34a; --sel:#f08a3c;
+  --ui:"IBM Plex Sans","Segoe UI",system-ui,"Apple SD Gothic Neo","Malgun Gothic",sans-serif;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--ui);
+  font-size:13px;overflow:hidden;-webkit-font-smoothing:antialiased;
+  font-variant-numeric:tabular-nums;}
+button{font-family:inherit;color:var(--fg);background:var(--panel2);border:1px solid var(--line);
+  border-radius:4px;padding:5px 8px;font-size:12px;cursor:pointer;transition:background .12s,border-color .12s}
+button:hover{background:#363a42;border-color:#4a4e58}
+button:active{background:#2a2d34}
+button.on{background:var(--accent);border-color:var(--accent);color:#1b1d21;font-weight:600}
+button:focus-visible{outline:2px solid var(--accent2);outline-offset:1px}
+input,select{font-family:inherit;color:var(--fg);background:#1b1d21;border:1px solid var(--line);
+  border-radius:4px;padding:4px 6px;font-size:12px;width:100%}
+input:focus,select:focus{outline:1px solid var(--accent2);border-color:var(--accent2)}
+input[type=color]{padding:1px;height:26px;cursor:pointer}
+input[type=range]{padding:0;accent-color:var(--accent)}
+label{color:var(--muted);font-size:11px;display:block;margin-bottom:2px;letter-spacing:.02em}
+
+#app{display:grid;grid-template-rows:auto 1fr auto;height:100%}
+
+/* 상단 메뉴바 */
+#menubar{display:flex;align-items:center;gap:6px;flex-wrap:wrap;
+  padding:6px max(10px,env(safe-area-inset-right,0px)) 6px max(10px,env(safe-area-inset-left,0px));
+  background:var(--panel);border-bottom:1px solid var(--line)}
+#menubar .brand{font-weight:700;font-size:15px;letter-spacing:.04em;color:#fff;margin-right:4px}
+#menubar .brand b{color:var(--accent)}
+#menubar .ver{color:var(--muted);font-size:10px;margin-right:8px}
+#menubar .sep{width:1px;height:20px;background:var(--line);margin:0 2px}
+.menugroup{display:flex;gap:3px;align-items:center}
+.menugroup .glabel{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.06em;margin-right:2px}
+
+/* 중앙 3분할 */
+#main{display:grid;grid-template-columns:52px 1fr 268px;min-height:0;overflow:hidden}
+#toolbar{background:var(--panel);border-right:1px solid var(--line);display:flex;flex-direction:column;
+  gap:3px;padding:6px 6px;overflow-y:auto}
+#toolbar button{padding:0;height:40px;width:40px;display:flex;flex-direction:column;align-items:center;
+  justify-content:center;gap:1px;font-size:9px;line-height:1.05;color:var(--muted)}
+#toolbar button:hover{color:var(--fg)}
+#toolbar button .ic{font-size:17px;line-height:1}
+#toolbar .tgap{height:6px;flex:none}
+
+#viewportWrap{position:relative;min-width:0;background:#141518}
+#viewport{position:absolute;inset:0}
+#vpOverlay{position:absolute;top:8px;left:10px;color:var(--muted);font-size:11px;pointer-events:none;
+  text-shadow:0 1px 2px #000;line-height:1.5}
+#vpOverlay b{color:var(--accent)}
+#gizmoHint{position:absolute;bottom:8px;left:10px;color:var(--muted);font-size:10px;pointer-events:none;
+  text-shadow:0 1px 2px #000}
+#renderBadge{position:absolute;top:8px;right:10px;background:rgba(240,138,60,.9);color:#1b1d21;
+  font-weight:600;font-size:11px;padding:3px 8px;border-radius:4px;pointer-events:none}
+
+/* 우측 패널 */
+#panel{background:var(--panel);border-left:1px solid var(--line);display:flex;flex-direction:column;
+  min-height:0;overflow:hidden}
+.ptabs{display:flex;border-bottom:1px solid var(--line);flex:none}
+.ptabs button{flex:1;border:0;border-radius:0;background:transparent;color:var(--muted);
+  padding:8px 4px;font-size:11px;border-bottom:2px solid transparent}
+.ptabs button.on{color:var(--fg);border-bottom-color:var(--accent);background:var(--panel2)}
+.pbody{flex:1;overflow-y:auto;padding:10px}
+.sect{margin-bottom:14px}
+.sect h4{margin:0 0 7px;font-size:11px;text-transform:uppercase;letter-spacing:.07em;color:var(--muted);
+  font-weight:600;border-bottom:1px solid var(--line);padding-bottom:4px}
+.row{display:flex;gap:6px;margin-bottom:6px}
+.row>div{flex:1;min-width:0}
+.row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:5px;margin-bottom:6px}
+.vlabel{color:var(--muted);font-size:10px;margin-bottom:2px;display:block}
+.vlabel.x{color:#e2726f}.vlabel.y{color:#8bc46a}.vlabel.z{color:#5a9ede}
+
+/* 아웃라이너 */
+#outliner{display:flex;flex-direction:column;gap:1px}
+.olitem{display:flex;align-items:center;gap:6px;padding:5px 7px;border-radius:4px;cursor:pointer;
+  font-size:12px;color:var(--fg)}
+.olitem:hover{background:var(--panel2)}
+.olitem.sel{background:rgba(240,138,60,.18);box-shadow:inset 2px 0 0 var(--accent)}
+.olitem .tyic{font-size:12px;width:16px;text-align:center;color:var(--muted)}
+.olitem .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.olitem .eye{color:var(--muted);font-size:11px;padding:1px 3px;border-radius:3px}
+.olitem .eye:hover{color:var(--fg);background:#3a3d45}
+.empty{color:var(--muted);font-size:11px;text-align:center;padding:16px 8px;line-height:1.6}
+
+/* 하단 상태바 */
+#statusbar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+  padding:5px max(10px,env(safe-area-inset-right,0px)) calc(5px + env(safe-area-inset-bottom,0px)) max(10px,env(safe-area-inset-left,0px));
+  background:var(--panel);border-top:1px solid var(--line);font-size:11px;color:var(--muted)}
+#statusbar b{color:var(--fg);font-weight:600}
+#statusbar .st-accent{color:var(--accent)}
+
+/* 모달 */
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.55);display:flex;align-items:center;
+  justify-content:center;z-index:50;padding:16px}
+.modal .box{background:var(--panel);border:1px solid var(--line);border-radius:8px;width:min(560px,100%);
+  max-height:86vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.5)}
+.modal .box h3{margin:0;padding:14px 16px;font-size:14px;border-bottom:1px solid var(--line)}
+.modal .box .mc{padding:14px 16px;overflow:auto}
+.modal .box .mf{padding:12px 16px;border-top:1px solid var(--line);display:flex;gap:8px;justify-content:flex-end}
+.modal textarea{width:100%;height:220px;background:#141518;color:var(--fg);border:1px solid var(--line);
+  border-radius:4px;padding:8px;font-family:"SFMono-Regular",Consolas,monospace;font-size:11px;resize:vertical}
+.hint{color:var(--muted);font-size:11px;line-height:1.6;margin:0 0 10px}
+
+.toast{position:fixed;bottom:44px;left:50%;transform:translateX(-50%);background:var(--accent);
+  color:#1b1d21;font-weight:600;font-size:12px;padding:8px 16px;border-radius:6px;z-index:60;
+  box-shadow:0 6px 20px rgba(0,0,0,.4);opacity:0;transition:opacity .2s,transform .2s;pointer-events:none}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(-4px)}
+
+/* 좁은 화면 */
+@media (max-width:820px){
+  #main{grid-template-columns:46px 1fr}
+  #panel{position:absolute;top:0;right:0;bottom:0;width:min(300px,86vw);z-index:30;
+    box-shadow:-8px 0 24px rgba(0,0,0,.4);transform:translateX(100%);transition:transform .2s}
+  #panel.open{transform:none}
+  #panelToggle{display:inline-flex!important}
+}
+#panelToggle{display:none}
+</style>
+
+<div id="app">
+  <div id="menubar">
+    <span class="brand"><b>Web</b>Max</span><span class="ver">v1.3 · three.js</span>
+    <div class="sep"></div>
+    <div class="menugroup">
+      <span class="glabel">파일</span>
+      <button id="mNew">새 씬</button>
+      <button id="mImport">가져오기</button>
+      <button id="mExport">내보내기</button>
+      <button id="mSave">저장</button>
+      <button id="mLoad">불러오기</button>
+    </div>
+    <div class="sep"></div>
+    <div class="menugroup">
+      <span class="glabel">변환</span>
+      <button id="mMove" class="on" title="이동 (W)">이동</button>
+      <button id="mRotate" title="회전 (E)">회전</button>
+      <button id="mScale" title="크기 (R)">크기</button>
+      <button id="mSpace" title="월드/로컬 기준">월드</button>
+    </div>
+    <div class="sep"></div>
+    <div class="menugroup">
+      <span class="glabel">뷰</span>
+      <button id="mWire" title="와이어프레임">와이어</button>
+      <button id="mXray" title="X-ray">X-ray</button>
+      <button id="mGrid" class="on" title="그리드">그리드</button>
+      <button id="mRender" title="렌더 (F9)">렌더</button>
+    </div>
+    <div class="sep"></div>
+    <button id="panelToggle">속성 ▸</button>
+  </div>
+
+  <div id="main">
+    <div id="toolbar">
+      <button data-prim="box"><span class="ic">▣</span>박스</button>
+      <button data-prim="sphere"><span class="ic">●</span>구</button>
+      <button data-prim="cylinder"><span class="ic">▮</span>실린더</button>
+      <button data-prim="cone"><span class="ic">▲</span>콘</button>
+      <button data-prim="torus"><span class="ic">◍</span>토러스</button>
+      <button data-prim="plane"><span class="ic">▭</span>평면</button>
+      <div class="tgap"></div>
+      <button data-light="directional"><span class="ic">☀</span>직사광</button>
+      <button data-light="point"><span class="ic">◉</span>포인트</button>
+      <button data-light="spot"><span class="ic">▽</span>스팟</button>
+      <div class="tgap"></div>
+      <button id="tbDup"><span class="ic">⧉</span>복제</button>
+      <button id="tbDel"><span class="ic">🗑</span>삭제</button>
+      <button id="tbFocus"><span class="ic">◎</span>포커스</button>
+    </div>
+
+    <div id="viewportWrap">
+      <div id="viewport"></div>
+      <div id="vpOverlay">투시 · <b id="vpMode">이동</b> 모드<br><span id="vpSel">선택 없음</span></div>
+      <div id="gizmoHint">클릭=선택 · W/E/R=변환 · F=포커스 · Del=삭제 · 마우스 드래그=회전 · 휠=줌</div>
+      <div id="renderBadge" hidden>렌더링…</div>
+    </div>
+
+    <div id="panel">
+      <div class="ptabs">
+        <button id="tabProps" class="on">속성</button>
+        <button id="tabScene">씬</button>
+        <button id="tabMod">모디파이어</button>
+      </div>
+      <div class="pbody">
+        <!-- 속성 -->
+        <div id="paneProps">
+          <div id="noSel" class="empty">객체를 선택하면<br>여기에 속성이 표시됩니다.</div>
+          <div id="selProps" hidden>
+            <div class="sect">
+              <h4>트랜스폼</h4>
+              <label>위치</label>
+              <div class="row3">
+                <div><span class="vlabel x">X</span><input type="number" id="px" step="0.1"></div>
+                <div><span class="vlabel y">Y</span><input type="number" id="py" step="0.1"></div>
+                <div><span class="vlabel z">Z</span><input type="number" id="pz" step="0.1"></div>
+              </div>
+              <label>회전 (°)</label>
+              <div class="row3">
+                <div><span class="vlabel x">X</span><input type="number" id="rx" step="1"></div>
+                <div><span class="vlabel y">Y</span><input type="number" id="ry" step="1"></div>
+                <div><span class="vlabel z">Z</span><input type="number" id="rz" step="1"></div>
+              </div>
+              <label>크기</label>
+              <div class="row3">
+                <div><span class="vlabel x">X</span><input type="number" id="sx" step="0.1"></div>
+                <div><span class="vlabel y">Y</span><input type="number" id="sy" step="0.1"></div>
+                <div><span class="vlabel z">Z</span><input type="number" id="sz" step="0.1"></div>
+              </div>
+            </div>
+            <div class="sect" id="matSect">
+              <h4>머티리얼 (PBR)</h4>
+              <div class="row">
+                <div><label>색상</label><input type="color" id="mcol" value="#b0b4bd"></div>
+                <div><label>발광색</label><input type="color" id="memis" value="#000000"></div>
+              </div>
+              <label>메탈릭 <span id="mmetV" style="float:right;color:var(--fg)">0.00</span></label>
+              <input type="range" id="mmet" min="0" max="1" step="0.01" value="0">
+              <label>러프니스 <span id="mrogV" style="float:right;color:var(--fg)">0.60</span></label>
+              <input type="range" id="mrog" min="0" max="1" step="0.01" value="0.6">
+              <label>불투명도 <span id="mopV" style="float:right;color:var(--fg)">1.00</span></label>
+              <input type="range" id="mop" min="0" max="1" step="0.01" value="1">
+              <div class="row" style="margin-top:8px">
+                <button id="mFlat" style="flex:1">플랫 셰이딩</button>
+                <button id="mSmooth" style="flex:1" class="on">스무스</button>
+              </div>
+            </div>
+            <div class="sect" id="lightSect" hidden>
+              <h4>라이트</h4>
+              <label>색상</label><input type="color" id="lcol" value="#ffffff">
+              <label>강도 <span id="lintV" style="float:right;color:var(--fg)">1.0</span></label>
+              <input type="range" id="lint" min="0" max="10" step="0.1" value="1">
+            </div>
+            <div class="sect">
+              <h4>이름</h4>
+              <input type="text" id="objName" placeholder="객체 이름">
+            </div>
+          </div>
+        </div>
+
+        <!-- 씬 아웃라이너 -->
+        <div id="paneScene" hidden>
+          <div class="sect">
+            <h4>아웃라이너</h4>
+            <div id="outliner"></div>
+          </div>
+          <div class="sect">
+            <h4>환경</h4>
+            <label>배경 밝기 <span id="envV" style="float:right;color:var(--fg)">0.6</span></label>
+            <input type="range" id="envInt" min="0" max="2" step="0.05" value="0.6">
+            <div class="row" style="margin-top:8px">
+              <button id="toggleShadow" class="on" style="flex:1">그림자</button>
+              <button id="toggleAmbient" class="on" style="flex:1">환경광</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- 모디파이어 -->
+        <div id="paneMod" hidden>
+          <div class="sect">
+            <h4>모디파이어 (선택 객체)</h4>
+            <p class="hint">메시를 선택한 뒤 적용합니다. 결과는 즉시 뷰포트에 반영됩니다.</p>
+            <div class="row"><button id="modSubdiv" style="flex:1">세분화 (Subdivide)</button></div>
+            <div class="row"><button id="modMirrorX" style="flex:1">미러 X</button><button id="modMirrorY" style="flex:1">미러 Y</button><button id="modMirrorZ" style="flex:1">미러 Z</button></div>
+            <div class="row">
+              <div><label>배열 개수</label><input type="number" id="arrN" value="4" min="2" max="40"></div>
+              <div><label>간격(X)</label><input type="number" id="arrGap" value="2.5" step="0.1"></div>
+            </div>
+            <div class="row"><button id="modArray" style="flex:1">배열 (Array)</button></div>
+            <div class="row"><button id="modTwist" style="flex:1">비틀기 (Twist)</button><button id="modNoise" style="flex:1">노이즈</button></div>
+            <div class="row"><button id="modCenter" style="flex:1">원점 정렬</button><button id="modGround" style="flex:1">바닥에 놓기</button></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="statusbar">
+    <span>객체 <b id="stObj">0</b></span>
+    <span>버텍스 <b id="stVert">0</b></span>
+    <span>삼각형 <b id="stTri">0</b></span>
+    <span>FPS <b id="stFps">0</b></span>
+    <span class="st-accent" id="stMsg">준비됨</span>
+  </div>
+</div>
+
+<input type="file" id="fileInput" accept=".obj,.gltf,.glb,.stl" hidden>
+<div id="modalMount"></div>
+<div class="toast" id="toast"></div>
+
+<script src="vendor/three.min.js"></script>
+<script src="vendor/OrbitControls.js"></script>
+<script src="vendor/TransformControls.js"></script>
+<script src="vendor/OBJLoader.js"></script>
+<script src="vendor/GLTFLoader.js"></script>
+<script src="vendor/STLLoader.js"></script>
+<script src="vendor/OBJExporter.js"></script>
+<script src="vendor/GLTFExporter.js"></script>
+<script src="vendor/STLExporter.js"></script>
+<script>
+(function(){
+'use strict';
+if(!window.THREE){document.getElementById('stMsg').textContent='3D 라이브러리 로드 실패';return;}
+const TH=THREE;
+
+/* ---------- 씬 셋업 ---------- */
+const vpEl=document.getElementById('viewport');
+const renderer=new TH.WebGLRenderer({antialias:true,preserveDrawingBuffer:true});
+renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
+renderer.shadowMap.enabled=true;
+renderer.shadowMap.type=TH.PCFSoftShadowMap;
+renderer.outputEncoding=TH.sRGBEncoding;
+renderer.toneMapping=TH.ACESFilmicToneMapping;
+renderer.toneMappingExposure=1.0;
+vpEl.appendChild(renderer.domElement);
+
+const scene=new TH.Scene();
+scene.background=new TH.Color(0x141518);
+
+const camera=new TH.PerspectiveCamera(50,1,0.01,5000);
+camera.position.set(7,6,9);
+
+const controls=new TH.OrbitControls(camera,renderer.domElement);
+controls.enableDamping=true;controls.dampingFactor=0.09;
+
+// 환경광 (헤미스피어 + 앰비언트) — 조정 가능
+const hemi=new TH.HemisphereLight(0xbfd4ff,0x2a2620,0.6);
+scene.add(hemi);
+const ambient=new TH.AmbientLight(0xffffff,0.25);
+scene.add(ambient);
+// 기본 키라이트 (씬 조명)
+const keyLight=new TH.DirectionalLight(0xffffff,1.1);
+keyLight.position.set(6,12,8);keyLight.castShadow=true;
+keyLight.shadow.mapSize.set(2048,2048);
+keyLight.shadow.camera.near=0.5;keyLight.shadow.camera.far=60;
+keyLight.shadow.camera.left=-20;keyLight.shadow.camera.right=20;
+keyLight.shadow.camera.top=20;keyLight.shadow.camera.bottom=-20;
+keyLight.shadow.bias=-0.0004;
+scene.add(keyLight);
+
+// 그림자 받는 바닥
+const groundMat=new TH.ShadowMaterial({opacity:0.32});
+const ground=new TH.Mesh(new TH.PlaneGeometry(400,400),groundMat);
+ground.rotation.x=-Math.PI/2;ground.receiveShadow=true;ground.userData.helper=true;
+scene.add(ground);
+
+// 그리드 + 축
+const grid=new TH.GridHelper(40,40,0x4a4e58,0x2f3238);
+grid.userData.helper=true;scene.add(grid);
+const axes=new TH.AxesHelper(2.4);axes.userData.helper=true;scene.add(axes);
+
+// 변환 기즈모
+const tc=new TH.TransformControls(camera,renderer.domElement);
+tc.addEventListener('dragging-changed',e=>{controls.enabled=!e.value;});
+tc.addEventListener('objectChange',()=>{syncPropsFromObject();updateStats();});
+scene.add(tc);
+
+/* ---------- 상태 ---------- */
+let selected=null;
+let objCounter={box:0,sphere:0,cylinder:0,cone:0,torus:0,plane:0,directional:0,point:0,spot:0,import:0};
+let wireMode=false,xrayMode=false;
+const raycaster=new TH.Raycaster();
+const pointer=new TH.Vector2();
+const selBox=new TH.BoxHelper(new TH.Object3D(),0xf08a3c);
+selBox.visible=false;scene.add(selBox);
+
+/* ---------- 유틸 ---------- */
+function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');
+  clearTimeout(toast._t);toast._t=setTimeout(()=>t.classList.remove('show'),1600);}
+function status(msg){document.getElementById('stMsg').textContent=msg;}
+function userMeshes(){return scene.children.filter(o=>o.userData&&o.userData.wm);}
+function stdMat(hex){return new TH.MeshStandardMaterial({color:hex,metalness:0,roughness:0.6});}
+
+/* ---------- 프리미티브 생성 ---------- */
+function addPrimitive(kind){
+  let geo,color=0xb0b4bd;
+  if(kind==='box')geo=new TH.BoxGeometry(2,2,2);
+  else if(kind==='sphere')geo=new TH.SphereGeometry(1.3,48,32);
+  else if(kind==='cylinder')geo=new TH.CylinderGeometry(1,1,2.4,48);
+  else if(kind==='cone')geo=new TH.ConeGeometry(1.3,2.6,48);
+  else if(kind==='torus')geo=new TH.TorusGeometry(1.2,0.42,24,64);
+  else if(kind==='plane'){geo=new TH.PlaneGeometry(4,4,1,1);}
+  const mesh=new TH.Mesh(geo,stdMat(color));
+  mesh.castShadow=true;mesh.receiveShadow=true;
+  objCounter[kind]=(objCounter[kind]||0)+1;
+  mesh.name=cap(kind)+' '+String(objCounter[kind]).padStart(3,'0');
+  mesh.userData.wm=true;mesh.userData.kind=kind;mesh.userData.smooth=(kind!=='box'&&kind!=='plane');
+  if(kind==='plane')mesh.rotation.x=-Math.PI/2;
+  // 바닥 위에 배치
+  geo.computeBoundingBox();
+  mesh.position.y=(kind==='plane')?0:-geo.boundingBox.min.y;
+  scene.add(mesh);
+  select(mesh);refreshOutliner();updateStats();status(mesh.name+' 생성');
+  return mesh;
+}
+function cap(s){return s.charAt(0).toUpperCase()+s.slice(1);}
+
+/* ---------- 라이트 생성 ---------- */
+function addLight(kind){
+  let light;
+  if(kind==='directional'){light=new TH.DirectionalLight(0xffffff,1.2);light.position.set(4,8,5);}
+  else if(kind==='point'){light=new TH.PointLight(0xffe0b0,20,60,2);light.position.set(3,5,3);}
+  else if(kind==='spot'){light=new TH.SpotLight(0xffffff,30,60,Math.PI/6,0.3,2);light.position.set(4,8,4);}
+  light.castShadow=true;
+  if(light.shadow){light.shadow.mapSize.set(1024,1024);}
+  objCounter[kind]=(objCounter[kind]||0)+1;
+  light.name=cap(kind)+'광 '+String(objCounter[kind]).padStart(2,'0');
+  light.userData.wm=true;light.userData.kind=kind;light.userData.isLight=true;
+  scene.add(light);
+  // 헬퍼 표시
+  let helper;
+  if(kind==='directional')helper=new TH.DirectionalLightHelper(light,1.5,0xffff66);
+  else if(kind==='point')helper=new TH.PointLightHelper(light,0.6,0xffff66);
+  else if(kind==='spot')helper=new TH.SpotLightHelper(light,0xffff66);
+  if(helper){helper.userData.helper=true;helper.userData.ownerUuid=light.uuid;scene.add(helper);light.userData.helper=helper;}
+  select(light);refreshOutliner();updateStats();status(light.name+' 생성');
+}
+function updateLightHelpers(){
+  scene.traverse(o=>{if(o.userData&&o.userData.helper&&o.update&&o.light){try{o.update();}catch(e){}}});
+}
+
+/* ---------- 선택 ---------- */
+function select(obj){
+  selected=obj;
+  if(obj){
+    tc.attach(obj);
+    if(obj.isMesh){selBox.setFromObject(obj);selBox.visible=true;}
+    else selBox.visible=false;
+  }else{tc.detach();selBox.visible=false;}
+  refreshProps();refreshOutlinerSel();
+  document.getElementById('vpSel').textContent=obj?obj.name:'선택 없음';
+}
+function deselect(){select(null);}
+
+/* 클릭 피킹 */
+renderer.domElement.addEventListener('pointerdown',onPointerDown);
+let downXY=null;
+function onPointerDown(e){downXY={x:e.clientX,y:e.clientY};}
+renderer.domElement.addEventListener('pointerup',e=>{
+  if(!downXY)return;
+  const moved=Math.abs(e.clientX-downXY.x)+Math.abs(e.clientY-downXY.y);
+  downXY=null;
+  if(moved>4)return; // 드래그는 선택 아님
+  if(tc.dragging)return;
+  const r=renderer.domElement.getBoundingClientRect();
+  pointer.x=((e.clientX-r.left)/r.width)*2-1;
+  pointer.y=-((e.clientY-r.top)/r.height)*2+1;
+  raycaster.setFromCamera(pointer,camera);
+  const targets=userMeshes().filter(o=>o.isMesh);
+  const hits=raycaster.intersectObjects(targets,false);
+  if(hits.length)select(hits[0].object);
+  else deselect();
+});
+
+/* ---------- 속성 패널 동기화 ---------- */
+const $=id=>document.getElementById(id);
+function refreshProps(){
+  const has=!!selected;
+  $('noSel').hidden=has;$('selProps').hidden=!has;
+  if(!has)return;
+  const isLight=!!(selected.userData&&selected.userData.isLight);
+  $('matSect').hidden=isLight;
+  $('lightSect').hidden=!isLight;
+  $('objName').value=selected.name||'';
+  syncPropsFromObject();
+  if(!isLight&&selected.material){
+    const m=selected.material;
+    $('mcol').value='#'+m.color.getHexString();
+    $('memis').value='#'+(m.emissive?m.emissive.getHexString():'000000');
+    setRange('mmet','mmetV',m.metalness,2);
+    setRange('mrog','mrogV',m.roughness,2);
+    setRange('mop','mopV',m.opacity,2);
+    $('mSmooth').classList.toggle('on',!!selected.userData.smooth);
+    $('mFlat').classList.toggle('on',!selected.userData.smooth);
+  }
+  if(isLight){
+    $('lcol').value='#'+selected.color.getHexString();
+    setRange('lint','lintV',selected.intensity,1);
+  }
+}
+function setRange(id,vid,val,dp){$(id).value=val;$(vid).textContent=Number(val).toFixed(dp);}
+function syncPropsFromObject(){
+  if(!selected)return;
+  const o=selected,R=180/Math.PI;
+  $('px').value=round(o.position.x);$('py').value=round(o.position.y);$('pz').value=round(o.position.z);
+  $('rx').value=round(o.rotation.x*R);$('ry').value=round(o.rotation.y*R);$('rz').value=round(o.rotation.z*R);
+  $('sx').value=round(o.scale.x);$('sy').value=round(o.scale.y);$('sz').value=round(o.scale.z);
+  if(o.isMesh){selBox.setFromObject(o);}
+  updateLightHelpers();
+}
+function round(n){return Math.round(n*1000)/1000;}
+
+// 트랜스폼 입력
+['px','py','pz'].forEach((id,i)=>$(id).addEventListener('input',()=>{if(!selected)return;
+  selected.position.setComponent(i,parseFloat($(id).value)||0);afterTransform();}));
+['rx','ry','rz'].forEach((id,i)=>$(id).addEventListener('input',()=>{if(!selected)return;
+  const v=(parseFloat($(id).value)||0)*Math.PI/180;
+  if(i===0)selected.rotation.x=v;if(i===1)selected.rotation.y=v;if(i===2)selected.rotation.z=v;afterTransform();}));
+['sx','sy','sz'].forEach((id,i)=>$(id).addEventListener('input',()=>{if(!selected)return;
+  selected.scale.setComponent(i,parseFloat($(id).value)||0.001);afterTransform();}));
+function afterTransform(){if(selected&&selected.isMesh)selBox.setFromObject(selected);updateLightHelpers();updateStats();}
+
+// 머티리얼 입력
+$('mcol').addEventListener('input',()=>{if(selected&&selected.material)selected.material.color.set($('mcol').value);});
+$('memis').addEventListener('input',()=>{if(selected&&selected.material)selected.material.emissive.set($('memis').value);});
+$('mmet').addEventListener('input',()=>{if(selected&&selected.material){selected.material.metalness=+$('mmet').value;$('mmetV').textContent=(+$('mmet').value).toFixed(2);}});
+$('mrog').addEventListener('input',()=>{if(selected&&selected.material){selected.material.roughness=+$('mrog').value;$('mrogV').textContent=(+$('mrog').value).toFixed(2);}});
+$('mop').addEventListener('input',()=>{if(selected&&selected.material){const v=+$('mop').value;selected.material.opacity=v;selected.material.transparent=v<1;$('mopV').textContent=v.toFixed(2);}});
+$('mFlat').addEventListener('click',()=>setShading(false));
+$('mSmooth').addEventListener('click',()=>setShading(true));
+function setShading(smooth){if(!selected||!selected.isMesh)return;
+  selected.userData.smooth=smooth;
+  const g=selected.geometry;
+  if(smooth)g.computeVertexNormals();
+  else{const ng=g.toNonIndexed();ng.computeVertexNormals();selected.geometry.dispose();selected.geometry=ng;}
+  selected.material.flatShading=!smooth;selected.material.needsUpdate=true;
+  $('mSmooth').classList.toggle('on',smooth);$('mFlat').classList.toggle('on',!smooth);
+}
+
+// 라이트 입력
+$('lcol').addEventListener('input',()=>{if(selected&&selected.isLight)selected.color.set($('lcol').value);});
+$('lint').addEventListener('input',()=>{if(selected&&selected.isLight){selected.intensity=+$('lint').value;$('lintV').textContent=(+$('lint').value).toFixed(1);}});
+$('objName').addEventListener('input',()=>{if(selected){selected.name=$('objName').value;refreshOutliner();$('vpSel').textContent=selected.name;}});
+
+/* ---------- 아웃라이너 ---------- */
+function refreshOutliner(){
+  const ol=$('outliner');ol.innerHTML='';
+  const list=userMeshes();
+  if(!list.length){ol.innerHTML='<div class="empty">씬이 비어 있습니다.<br>좌측에서 객체를 추가하세요.</div>';return;}
+  list.forEach(o=>{
+    const it=document.createElement('div');it.className='olitem'+(o===selected?' sel':'');
+    const tyic=o.userData.isLight?'◉':'▣';
+    it.innerHTML='<span class="tyic">'+tyic+'</span><span class="nm"></span><span class="eye">'+(o.visible?'👁':'—')+'</span>';
+    it.querySelector('.nm').textContent=o.name;
+    it.addEventListener('click',e=>{if(e.target.classList.contains('eye')){o.visible=!o.visible;if(o.userData.helper)o.userData.helper.visible=o.visible;refreshOutliner();return;}select(o);});
+    ol.appendChild(it);
+  });
+}
+function refreshOutlinerSel(){document.querySelectorAll('.olitem').forEach(el=>el.classList.remove('sel'));refreshOutliner();}
+
+/* ---------- 복제 / 삭제 / 포커스 ---------- */
+function duplicateSel(){
+  if(!selected)return;
+  let clone;
+  if(selected.isMesh){clone=selected.clone();clone.geometry=selected.geometry.clone();clone.material=selected.material.clone();}
+  else{clone=selected.clone();}
+  clone.position.x+=2.2;clone.name=selected.name+' 복사';clone.userData={...selected.userData};
+  if(clone.userData.helper)delete clone.userData.helper;
+  scene.add(clone);select(clone);refreshOutliner();updateStats();status('복제됨');
+}
+function deleteSel(){
+  if(!selected)return;
+  const o=selected;
+  if(o.userData&&o.userData.helper&&o.userData.helper.parent)scene.remove(o.userData.helper);
+  tc.detach();scene.remove(o);
+  if(o.geometry)o.geometry.dispose();if(o.material)o.material.dispose&&o.material.dispose();
+  selected=null;selBox.visible=false;refreshProps();refreshOutliner();updateStats();
+  $('vpSel').textContent='선택 없음';status('삭제됨');
+}
+function focusSel(){
+  const o=selected;if(!o){controls.target.set(0,0,0);return;}
+  const box=new TH.Box3().setFromObject(o);const c=box.getCenter(new TH.Vector3());
+  const size=box.getSize(new TH.Vector3()).length()||4;
+  controls.target.copy(c);
+  const dir=new TH.Vector3().subVectors(camera.position,c).normalize();
+  camera.position.copy(c).addScaledVector(dir,size*1.4+2);
+}
+$('tbDup').onclick=duplicateSel;$('tbDel').onclick=deleteSel;$('tbFocus').onclick=focusSel;
+
+/* ---------- 모디파이어 ---------- */
+function needMesh(){if(!selected||!selected.isMesh){toast('메시를 먼저 선택하세요');return false;}return true;}
+$('modSubdiv').onclick=()=>{if(!needMesh())return;
+  // 세그먼트 기반 재생성 또는 단순 테셀레이션(루프 서브디비전 간이)
+  const g=selected.geometry;const ng=simpleSubdivide(g);selected.geometry.dispose();selected.geometry=ng;
+  if(selected.userData.smooth)ng.computeVertexNormals();
+  selBox.setFromObject(selected);updateStats();status('세분화 적용');};
+$('modMirrorX').onclick=()=>mirror('x');$('modMirrorY').onclick=()=>mirror('y');$('modMirrorZ').onclick=()=>mirror('z');
+function mirror(axis){if(!needMesh())return;
+  const clone=selected.clone();clone.geometry=selected.geometry.clone();clone.material=selected.material.clone();
+  clone.scale[axis]*=-1;clone.name=selected.name+' 미러'+axis.toUpperCase();
+  clone.userData={...selected.userData};delete clone.userData.helper;
+  scene.add(clone);refreshOutliner();updateStats();status('미러 '+axis.toUpperCase());}
+$('modArray').onclick=()=>{if(!needMesh())return;
+  const n=Math.max(2,Math.min(40,parseInt($('arrN').value)||4));
+  const gap=parseFloat($('arrGap').value)||2.5;
+  for(let i=1;i<n;i++){const clone=selected.clone();clone.geometry=selected.geometry.clone();clone.material=selected.material;
+    clone.position.x+=gap*i;clone.name=selected.name+' ['+i+']';clone.userData={...selected.userData};delete clone.userData.helper;scene.add(clone);}
+  refreshOutliner();updateStats();status(n+'개 배열 생성');};
+$('modTwist').onclick=()=>{if(!needMesh())return;deformTwist(selected.geometry,Math.PI/2);selectReapply();status('비틀기 적용');};
+$('modNoise').onclick=()=>{if(!needMesh())return;deformNoise(selected.geometry,0.12);selectReapply();status('노이즈 적용');};
+$('modCenter').onclick=()=>{if(!selected)return;selected.position.set(0,selected.position.y,0);afterTransform();syncPropsFromObject();status('원점 정렬');};
+$('modGround').onclick=()=>{if(!selected||!selected.isMesh)return;const box=new TH.Box3().setFromObject(selected);selected.position.y-=box.min.y;afterTransform();syncPropsFromObject();status('바닥에 놓음');};
+function selectReapply(){const g=selected.geometry;if(selected.userData.smooth)g.computeVertexNormals();g.attributes.position.needsUpdate=true;selBox.setFromObject(selected);updateStats();}
+
+function simpleSubdivide(geo){
+  // 비인덱스 삼각형을 4분할
+  const src=geo.index?geo.toNonIndexed():geo;
+  const pos=src.attributes.position;const out=[];
+  const a=new TH.Vector3(),b=new TH.Vector3(),c=new TH.Vector3();
+  const ab=new TH.Vector3(),bc=new TH.Vector3(),ca=new TH.Vector3();
+  for(let i=0;i<pos.count;i+=3){
+    a.fromBufferAttribute(pos,i);b.fromBufferAttribute(pos,i+1);c.fromBufferAttribute(pos,i+2);
+    ab.addVectors(a,b).multiplyScalar(0.5);bc.addVectors(b,c).multiplyScalar(0.5);ca.addVectors(c,a).multiplyScalar(0.5);
+    pushTri(out,a,ab,ca);pushTri(out,ab,b,bc);pushTri(out,ca,bc,c);pushTri(out,ab,bc,ca);
+  }
+  const ng=new TH.BufferGeometry();
+  ng.setAttribute('position',new TH.Float32BufferAttribute(out,3));
+  ng.computeVertexNormals();return ng;
+}
+function pushTri(arr,p,q,r){arr.push(p.x,p.y,p.z,q.x,q.y,q.z,r.x,r.y,r.z);}
+function deformTwist(geo,amount){
+  const pos=geo.attributes.position;geo.computeBoundingBox();
+  const minY=geo.boundingBox.min.y,h=(geo.boundingBox.max.y-minY)||1;
+  const v=new TH.Vector3();
+  for(let i=0;i<pos.count;i++){v.fromBufferAttribute(pos,i);
+    const t=(v.y-minY)/h,ang=amount*t,cs=Math.cos(ang),sn=Math.sin(ang);
+    const nx=v.x*cs-v.z*sn,nz=v.x*sn+v.z*cs;pos.setXYZ(i,nx,v.y,nz);}
+  pos.needsUpdate=true;}
+function deformNoise(geo,amt){
+  const pos=geo.attributes.position,norm=geo.attributes.normal;
+  const v=new TH.Vector3(),n=new TH.Vector3();
+  for(let i=0;i<pos.count;i++){v.fromBufferAttribute(pos,i);
+    const d=(Math.sin(v.x*4.1)*Math.cos(v.y*3.7)*Math.sin(v.z*4.3))*amt;
+    if(norm){n.fromBufferAttribute(norm,i);v.addScaledVector(n,d);}else{v.multiplyScalar(1+d);}
+    pos.setXYZ(i,v.x,v.y,v.z);}
+  pos.needsUpdate=true;}
+
+/* ---------- 뷰 토글 ---------- */
+$('mWire').onclick=()=>{wireMode=!wireMode;$('mWire').classList.toggle('on',wireMode);
+  userMeshes().forEach(o=>{if(o.material)o.material.wireframe=wireMode;});status(wireMode?'와이어프레임':'솔리드');};
+$('mXray').onclick=()=>{xrayMode=!xrayMode;$('mXray').classList.toggle('on',xrayMode);
+  userMeshes().forEach(o=>{if(o.material){o.material.transparent=xrayMode||o.material.opacity<1;o.material.opacity=xrayMode?0.4:(round(o.material.opacity)<1?o.material.opacity:1);o.material.depthWrite=!xrayMode;}});status(xrayMode?'X-ray':'불투명');};
+$('mGrid').onclick=()=>{const v=!grid.visible;grid.visible=v;axes.visible=v;$('mGrid').classList.toggle('on',v);};
+
+/* ---------- 변환 모드 ---------- */
+function setMode(m){tc.setMode(m);
+  $('mMove').classList.toggle('on',m==='translate');
+  $('mRotate').classList.toggle('on',m==='rotate');
+  $('mScale').classList.toggle('on',m==='scale');
+  $('vpMode').textContent=m==='translate'?'이동':m==='rotate'?'회전':'크기';}
+$('mMove').onclick=()=>setMode('translate');
+$('mRotate').onclick=()=>setMode('rotate');
+$('mScale').onclick=()=>setMode('scale');
+let worldSpace=true;
+$('mSpace').onclick=()=>{worldSpace=!worldSpace;tc.setSpace(worldSpace?'world':'local');$('mSpace').textContent=worldSpace?'월드':'로컬';};
+
+/* ---------- 환경 ---------- */
+$('envInt').addEventListener('input',()=>{const v=+$('envInt').value;hemi.intensity=v;$('envV').textContent=v.toFixed(2);});
+$('toggleShadow').onclick=()=>{renderer.shadowMap.enabled=!renderer.shadowMap.enabled;$('toggleShadow').classList.toggle('on',renderer.shadowMap.enabled);
+  userMeshes().forEach(o=>{if(o.material)o.material.needsUpdate=true;});status('그림자 '+(renderer.shadowMap.enabled?'켬':'끔'));};
+$('toggleAmbient').onclick=()=>{const on=ambient.intensity===0;ambient.intensity=on?0.25:0;$('toggleAmbient').classList.toggle('on',on);};
+
+/* ---------- 렌더(고품질 캡처) ---------- */
+$('mRender').onclick=doRender;
+function doRender(){
+  const badge=$('renderBadge');badge.hidden=false;badge.textContent='렌더링…';
+  const oldExp=renderer.toneMappingExposure;renderer.toneMappingExposure=1.05;
+  tc.visible=false;selBox.visible=false;const gv=grid.visible,av=axes.visible;grid.visible=false;axes.visible=false;
+  renderer.render(scene,camera);
+  const data=renderer.domElement.toDataURL('image/png');
+  tc.visible=true;if(selected&&selected.isMesh)selBox.visible=true;grid.visible=gv;axes.visible=av;renderer.toneMappingExposure=oldExp;
+  badge.hidden=true;
+  openModal('렌더 결과',
+    '<p class="hint">아래 이미지를 길게 눌러(또는 우클릭) 저장하거나, 복사 버튼으로 이미지를 클립보드에 담을 수 있습니다.</p>'+
+    '<img src="'+data+'" style="width:100%;border:1px solid var(--line);border-radius:6px">',
+    [{label:'이미지 복사',primary:true,act:async()=>{try{const blob=await(await fetch(data)).blob();await navigator.clipboard.write([new ClipboardItem({'image/png':blob})]);toast('이미지 복사됨');}catch(e){toast('복사 미지원 — 이미지를 길게 눌러 저장하세요');}}},{label:'닫기',act:closeModal}]);
+}
+
+/* ---------- import ---------- */
+$('mImport').onclick=()=>$('fileInput').click();
+$('fileInput').addEventListener('change',e=>{const f=e.target.files[0];if(!f)return;importFile(f);e.target.value='';});
+function importFile(file){
+  const ext=file.name.split('.').pop().toLowerCase();
+  const reader=new FileReader();
+  status('가져오는 중: '+file.name);
+  reader.onload=()=>{
+    try{
+      if(ext==='obj'){const obj=new TH.OBJLoader().parse(reader.result);addImported(obj,file.name);}
+      else if(ext==='stl'){const geo=new TH.STLLoader().parse(reader.result);geo.computeVertexNormals();
+        const m=new TH.Mesh(geo,stdMat(0xb0b4bd));finishImport(m,file.name);}
+      else if(ext==='gltf'||ext==='glb'){new TH.GLTFLoader().parse(reader.result,'',g=>{addImported(g.scene,file.name);},err=>{toast('GLTF 파싱 실패');});}
+    }catch(err){toast('가져오기 실패: '+err.message);console.error(err);}
+  };
+  if(ext==='stl'||ext==='glb')reader.readAsArrayBuffer(file);else reader.readAsText(file);
+}
+function addImported(root,name){
+  // 그룹 내 메시들을 개별 등록
+  const meshes=[];root.traverse(o=>{if(o.isMesh)meshes.push(o);});
+  if(!meshes.length){toast('메시가 없습니다');return;}
+  meshes.forEach((m,i)=>{
+    const geo=m.geometry;const mat=(m.material&&m.material.isMeshStandardMaterial)?m.material:stdMat(0xb0b4bd);
+    const mesh=new TH.Mesh(geo,mat);mesh.castShadow=true;mesh.receiveShadow=true;
+    finishImport(mesh,(meshes.length>1?name+' #'+(i+1):name),i===meshes.length-1);
+  });
+}
+function finishImport(mesh,name,doSelect=true){
+  objCounter.import++;mesh.name=name.replace(/\.[^.]+$/,'')||('가져옴 '+objCounter.import);
+  mesh.userData.wm=true;mesh.userData.kind='import';mesh.userData.smooth=true;
+  // 적당한 크기로 정규화
+  mesh.geometry.computeBoundingBox();const s=mesh.geometry.boundingBox.getSize(new TH.Vector3());
+  const maxd=Math.max(s.x,s.y,s.z)||1;if(maxd>12||maxd<0.4){const f=4/maxd;mesh.scale.setScalar(f);}
+  scene.add(mesh);const box=new TH.Box3().setFromObject(mesh);mesh.position.y-=box.min.y;
+  if(doSelect)select(mesh);refreshOutliner();updateStats();status('가져옴: '+mesh.name);
+}
+
+/* ---------- export ---------- */
+$('mExport').onclick=()=>{
+  openModal('내보내기',
+    '<p class="hint">형식을 고르면 텍스트가 생성됩니다. 전체 선택 후 복사해 .obj/.gltf/.stl 파일로 저장하세요. (뷰어 보안상 자동 다운로드는 막혀 있어 복사 방식으로 제공합니다.)</p>'+
+    '<div class="row"><button id="exOBJ" style="flex:1">OBJ</button><button id="exGLTF" style="flex:1">GLTF</button><button id="exSTL" style="flex:1">STL (ASCII)</button></div>'+
+    '<textarea id="exOut" placeholder="형식 버튼을 누르면 여기에 결과가 나옵니다" readonly></textarea>',
+    [{label:'복사',primary:true,act:()=>{const ta=$('exOut');if(!ta.value){toast('먼저 형식을 선택하세요');return;}ta.select();try{navigator.clipboard.writeText(ta.value);toast('복사됨');}catch(e){document.execCommand('copy');toast('복사됨');}}},{label:'닫기',act:closeModal}]);
+  const exportRoot=()=>{const g=new TH.Group();userMeshes().filter(o=>o.isMesh).forEach(o=>g.add(o.clone()));return g;};
+  $('exOBJ').onclick=()=>{try{$('exOut').value=new TH.OBJExporter().parse(exportRoot());status('OBJ 생성');}catch(e){toast('OBJ 실패');}};
+  $('exSTL').onclick=()=>{try{$('exOut').value=new TH.STLExporter().parse(exportRoot(),{binary:false});status('STL 생성');}catch(e){toast('STL 실패');}};
+  $('exGLTF').onclick=()=>{try{new TH.GLTFExporter().parse(exportRoot(),r=>{$('exOut').value=JSON.stringify(r,null,1);status('GLTF 생성');},{});}catch(e){toast('GLTF 실패');}};
+};
+
+/* ---------- 프로젝트 저장/로드 (JSON) ---------- */
+$('mSave').onclick=()=>{
+  const data=serialize();const json=JSON.stringify(data);
+  try{localStorage.setItem('webmax_scene',json);}catch(e){}
+  openModal('프로젝트 저장',
+    '<p class="hint">브라우저에 저장되었습니다(불러오기로 복원). 다른 기기로 옮기려면 아래 JSON을 복사해 보관하세요.</p>'+
+    '<textarea id="saveOut" readonly></textarea>',
+    [{label:'복사',primary:true,act:()=>{$('saveOut').select();try{navigator.clipboard.writeText($('saveOut').value);toast('복사됨');}catch(e){document.execCommand('copy');toast('복사됨');}}},{label:'닫기',act:closeModal}]);
+  $('saveOut').value=JSON.stringify(data,null,1);status('저장됨');
+};
+$('mLoad').onclick=()=>{
+  let stored='';try{stored=localStorage.getItem('webmax_scene')||'';}catch(e){}
+  openModal('프로젝트 불러오기',
+    '<p class="hint">저장해 둔 JSON을 붙여넣고 불러오면 현재 씬을 대체합니다.'+(stored?' (브라우저에 저장된 씬이 채워져 있습니다.)':'')+'</p>'+
+    '<textarea id="loadIn" placeholder="여기에 프로젝트 JSON 붙여넣기">'+(stored?escapeHtml(stored):'')+'</textarea>',
+    [{label:'불러오기',primary:true,act:()=>{try{deserialize(JSON.parse($('loadIn').value));closeModal();toast('불러옴');}catch(e){toast('JSON 오류');}}},{label:'닫기',act:closeModal}]);
+};
+function escapeHtml(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function serialize(){
+  const objs=userMeshes().map(o=>{
+    const base={name:o.name,kind:o.userData.kind,isLight:!!o.userData.isLight,smooth:!!o.userData.smooth,
+      pos:o.position.toArray(),rot:[o.rotation.x,o.rotation.y,o.rotation.z],scl:o.scale.toArray(),visible:o.visible};
+    if(o.isMesh){base.geo=geoToJSON(o.geometry);base.mat={color:'#'+o.material.color.getHexString(),
+      emissive:'#'+o.material.emissive.getHexString(),metalness:o.material.metalness,roughness:o.material.roughness,opacity:o.material.opacity};}
+    else if(o.isLight){base.light={color:'#'+o.color.getHexString(),intensity:o.intensity,type:o.userData.kind};}
+    return base;
+  });
+  return {v:'1.3',env:{hemi:hemi.intensity,ambient:ambient.intensity},objs};
+}
+function geoToJSON(g){const p=g.attributes.position;const idx=g.index;
+  return {pos:Array.from(p.array),idx:idx?Array.from(idx.array):null};}
+function jsonToGeo(j){const g=new TH.BufferGeometry();
+  g.setAttribute('position',new TH.Float32BufferAttribute(j.pos,3));
+  if(j.idx)g.setIndex(j.idx);g.computeVertexNormals();return g;}
+function deserialize(data){
+  userMeshes().forEach(o=>{if(o.userData.helper&&o.userData.helper.parent)scene.remove(o.userData.helper);scene.remove(o);});
+  tc.detach();selected=null;selBox.visible=false;
+  if(data.env){hemi.intensity=data.env.hemi;ambient.intensity=data.env.ambient;$('envInt').value=hemi.intensity;$('envV').textContent=hemi.intensity.toFixed(2);}
+  (data.objs||[]).forEach(d=>{
+    let o;
+    if(d.isLight){
+      if(d.light.type==='directional')o=new TH.DirectionalLight(d.light.color,d.light.intensity);
+      else if(d.light.type==='point')o=new TH.PointLight(d.light.color,d.light.intensity,60,2);
+      else o=new TH.SpotLight(d.light.color,d.light.intensity,60,Math.PI/6,0.3,2);
+      o.castShadow=true;o.userData.isLight=true;
+    }else{
+      const geo=jsonToGeo(d.geo);const mat=new TH.MeshStandardMaterial({color:d.mat.color,emissive:d.mat.emissive,
+        metalness:d.mat.metalness,roughness:d.mat.roughness,opacity:d.mat.opacity,transparent:d.mat.opacity<1});
+      o=new TH.Mesh(geo,mat);o.castShadow=true;o.receiveShadow=true;
+    }
+    o.name=d.name;o.userData.wm=true;o.userData.kind=d.kind;o.userData.smooth=d.smooth;
+    o.position.fromArray(d.pos);o.rotation.set(d.rot[0],d.rot[1],d.rot[2]);o.scale.fromArray(d.scl);o.visible=d.visible!==false;
+    scene.add(o);
+  });
+  refreshOutliner();updateStats();refreshProps();
+}
+
+/* ---------- 새 씬 ---------- */
+$('mNew').onclick=()=>{
+  openModal('새 씬','<p class="hint">현재 씬을 모두 지우고 빈 씬으로 시작합니다. 저장하지 않은 작업은 사라집니다.</p>',
+  [{label:'새로 시작',primary:true,act:()=>{clearScene();closeModal();status('새 씬');}},{label:'취소',act:closeModal}]);
+};
+function clearScene(){userMeshes().forEach(o=>{if(o.userData.helper&&o.userData.helper.parent)scene.remove(o.userData.helper);scene.remove(o);});
+  tc.detach();selected=null;selBox.visible=false;refreshProps();refreshOutliner();updateStats();}
+
+/* ---------- 패널 탭 ---------- */
+function tab(name){
+  $('paneProps').hidden=name!=='props';$('paneScene').hidden=name!=='scene';$('paneMod').hidden=name!=='mod';
+  $('tabProps').classList.toggle('on',name==='props');$('tabScene').classList.toggle('on',name==='scene');$('tabMod').classList.toggle('on',name==='mod');
+  if(name==='scene')refreshOutliner();
+}
+$('tabProps').onclick=()=>tab('props');$('tabScene').onclick=()=>tab('scene');$('tabMod').onclick=()=>tab('mod');
+$('panelToggle').onclick=()=>$('panel').classList.toggle('open');
+
+/* ---------- 모달 ---------- */
+function openModal(title,html,buttons){
+  closeModal();
+  const m=document.createElement('div');m.className='modal';m.id='activeModal';
+  const bhtml=buttons.map((b,i)=>'<button data-i="'+i+'"'+(b.primary?' class="on"':'')+'>'+b.label+'</button>').join('');
+  m.innerHTML='<div class="box"><h3>'+title+'</h3><div class="mc">'+html+'</div><div class="mf">'+bhtml+'</div></div>';
+  document.getElementById('modalMount').appendChild(m);
+  m.querySelectorAll('.mf button').forEach(btn=>btn.onclick=()=>{const b=buttons[+btn.dataset.i];if(b.act)b.act();});
+  m.addEventListener('mousedown',e=>{if(e.target===m)closeModal();});
+}
+function closeModal(){const m=document.getElementById('activeModal');if(m)m.remove();}
+
+/* ---------- 프리미티브/라이트 버튼 바인딩 ---------- */
+document.querySelectorAll('[data-prim]').forEach(b=>b.onclick=()=>addPrimitive(b.dataset.prim));
+document.querySelectorAll('[data-light]').forEach(b=>b.onclick=()=>addLight(b.dataset.light));
+
+/* ---------- 키보드 ---------- */
+window.addEventListener('keydown',e=>{
+  if(/input|textarea|select/i.test(e.target.tagName))return;
+  const k=e.key.toLowerCase();
+  if(k==='w')setMode('translate');
+  else if(k==='e')setMode('rotate');
+  else if(k==='r')setMode('scale');
+  else if(k==='f')focusSel();
+  else if(k==='delete'||k==='backspace'){deleteSel();e.preventDefault();}
+  else if(k==='d'&&(e.ctrlKey||e.metaKey)){e.preventDefault();duplicateSel();}
+  else if(k==='escape')deselect();
+  else if(k==='f9'){e.preventDefault();doRender();}
+});
+
+/* ---------- 통계 / 루프 ---------- */
+function updateStats(){
+  const list=userMeshes();let verts=0,tris=0;
+  list.forEach(o=>{if(o.isMesh&&o.geometry){const p=o.geometry.attributes.position;verts+=p.count;
+    tris+=(o.geometry.index?o.geometry.index.count:p.count)/3;}});
+  $('stObj').textContent=list.length;$('stVert').textContent=verts.toLocaleString();
+  $('stTri').textContent=Math.round(tris).toLocaleString();
+}
+let frames=0,lastF=performance.now();
+function resize(){const w=vpEl.clientWidth,h=vpEl.clientHeight;if(!w||!h)return;
+  renderer.setSize(w,h,false);camera.aspect=w/h;camera.updateProjectionMatrix();}
+window.addEventListener('resize',resize);
+new ResizeObserver(resize).observe(vpEl);
+
+function animate(){
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene,camera);
+  frames++;const now=performance.now();
+  if(now-lastF>=500){$('stFps').textContent=Math.round(frames*1000/(now-lastF));frames=0;lastF=now;}
+}
+
+/* ---------- 초기 샘플 씬 ---------- */
+function seed(){
+  resize();
+  const box=addPrimitive('box');box.position.set(-2.6,1,0);box.material.color.set('#e07a3c');box.material.roughness=0.45;
+  const sph=addPrimitive('sphere');sph.position.set(0.4,1.3,0.5);sph.material.color.set('#4a9eda');sph.material.metalness=0.6;sph.material.roughness=0.15;
+  const tor=addPrimitive('torus');tor.position.set(3,1.4,-0.6);tor.material.color.set('#c7cdd6');tor.material.metalness=0.9;tor.material.roughness=0.25;
+  select(box);tab('props');updateStats();status('샘플 씬 로드 — 바로 편집 가능');
+}
+seed();
+animate();
+})();
+</script>
+
+</body></html>
