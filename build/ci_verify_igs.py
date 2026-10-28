@@ -3,6 +3,12 @@
 복호화되는지 end-to-end 검증(append 없음). 실패 원인은 ::error:: 로 전부 노출."""
 import os, sys, subprocess, tempfile, traceback
 
+for _s in (sys.stdout, sys.stderr):
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 
 _DIAG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dist", "diag.txt")
 
