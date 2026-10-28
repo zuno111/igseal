@@ -639,9 +639,13 @@ def render_mesh_image(mesh, size=520, angle_x=0.5, angle_y=0.6, watermark=""):
     import numpy as np
     from PIL import Image, ImageDraw, ImageFont
     v = np.asarray(mesh.vertices, dtype=float).copy()
-    f = np.asarray(mesh.faces)
-    if len(v) == 0 or len(f) == 0:
+    f = np.asarray(getattr(mesh, "faces", []))
+    if len(v) == 0:
         return Image.new("RGB", (size, size), (20, 22, 28))
+    if len(f) == 0:
+        # 점군(.ply 등 면 없음) → 포인트 렌더
+        return _render_points(v, getattr(mesh, "colors", None),
+                              size, angle_x, angle_y, watermark)
     v -= v.mean(axis=0)
     v /= (np.abs(v).max() + 1e-9)
     cx, sx = np.cos(angle_x), np.sin(angle_x)
@@ -680,16 +684,66 @@ def render_mesh_image(mesh, size=520, angle_x=0.5, angle_y=0.6, watermark=""):
     return img
 
 
+def _render_points(v, colors, size, angle_x, angle_y, watermark):
+    import numpy as np
+    from PIL import Image, ImageDraw, ImageFont
+    v = np.asarray(v, dtype=float).copy()
+    v -= v.mean(axis=0); v /= (np.abs(v).max() + 1e-9)
+    cx, sx = np.cos(angle_x), np.sin(angle_x)
+    cy, sy = np.cos(angle_y), np.sin(angle_y)
+    Rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]])
+    Ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]])
+    v = v @ Rx.T @ Ry.T
+    scr = (v[:, :2] * 0.42 + 0.5) * size
+    scr[:, 1] = size - scr[:, 1]
+    order = np.argsort(v[:, 2])
+    img = Image.new("RGB", (size, size), (11, 13, 18))
+    px = img.load()
+    cols = None
+    if colors is not None:
+        try:
+            cols = np.asarray(colors)[:, :3]
+            if cols.max() > 1.5:
+                cols = cols / 255.0
+        except Exception:
+            cols = None
+    for i in order:
+        x, y = int(scr[i, 0]), int(scr[i, 1])
+        if 0 <= x < size and 0 <= y < size:
+            if cols is not None and i < len(cols):
+                c = cols[i]; px[x, y] = (int(c[0] * 255), int(c[1] * 255), int(c[2] * 255))
+            else:
+                d = 0.5 + 0.5 * v[i, 2]
+                px[x, y] = (int(90 + d * 120), int(150 + d * 80), int(200))
+    if watermark:
+        try:
+            dr = ImageDraw.Draw(img)
+            font = None
+            for fp in ("malgun.ttf", "arial.ttf", "DejaVuSans.ttf"):
+                try:
+                    font = ImageFont.truetype(fp, 18); break
+                except Exception:
+                    continue
+            dr.text((12, size - 26), watermark, font=font or ImageFont.load_default(),
+                    fill=(255, 255, 255))
+        except Exception:
+            pass
+    return img
+
+
 def load_mesh_from_bytes(data, ext):
     """바이트 -> trimesh. 씬이면 합침. 실패시 None."""
     import trimesh
-    bio = io.BytesIO(data)
+    ft = ext.lstrip(".").lower()
+    # 먼저 일반 로드(점군 PointCloud 보존), 실패 시 force="mesh"
+    obj = None
     try:
-        obj = trimesh.load(bio, file_type=ext.lstrip(".").lower(), force="mesh")
+        obj = trimesh.load(io.BytesIO(data), file_type=ft)
     except Exception:
+        obj = None
+    if obj is None or (not hasattr(obj, "vertices")) or len(getattr(obj, "vertices", [])) == 0:
         try:
-            bio.seek(0)
-            obj = trimesh.load(bio, file_type=ext.lstrip(".").lower())
+            obj = trimesh.load(io.BytesIO(data), file_type=ft, force="mesh")
         except Exception:
             return None
     if hasattr(obj, "vertices"):
