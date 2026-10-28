@@ -108,7 +108,37 @@ def seal_igs(paths, out_igs, password, expiry=None, title="봉인 패키지",
     return len(files), os.path.getsize(out_igs), pkg_id
 
 
+def seal_igs_bound(paths, out_igs, password, key_server, secret_key,
+                   expiry=None, title="봉인 패키지", watermark="", max_opens=None,
+                   open_timer_hours=None):
+    """키-분리 .igs 봉인 + 키 서버에 pkg_secret 등록. 전문가도 다른 PC로 못 옮김.
+    반환: (파일수, 크기, pkg_id)."""
+    files = gather_files(paths)
+    if not files:
+        raise RuntimeError("봉인할 파일이 없습니다.")
+    import uuid as _uuid
+    pkg_id = _uuid.uuid4().hex[:12]
+    payload, pkg_secret_hex = core.build_bound_payload(
+        files, password, key_server=key_server, expiry=expiry, title=title,
+        watermark=watermark, max_opens=max_opens, pkg_id=pkg_id,
+        open_timer_hours=open_timer_hours)
+    # 키 서버 등록 (실패 시 파일 안 만들고 중단 — 키 없이 배포되면 거래처가 못 엶)
+    core.register_pkg_secret(key_server, pkg_id, pkg_secret_hex, secret_key)
+    core.write_igs(out_igs, payload)
+    return len(files), os.path.getsize(out_igs), pkg_id
+
+
 # ---------------- CLI / selftest ----------------
+def cli_seal_bound(argv):
+    # --seal-bound SRC OUT.igs PASSWORD KEY_SERVER SECRET_KEY [EXPIRY]
+    i = argv.index("--seal-bound")
+    src, out, pw, ks, sk = argv[i + 1:i + 6]
+    exp = argv[i + 6] if len(argv) > i + 6 and not argv[i + 6].startswith("--") else None
+    n, sz, pid = seal_igs_bound([src], out, pw, ks, sk, expiry=exp, title="CLI BOUND")
+    print("SEALED_BOUND files=%d size=%d pkg_id=%s -> %s" % (n, sz, pid, out))
+    return 0
+
+
 def cli_seal(argv):
     # --seal SRC OUT PASSWORD [EXPIRY]
     i = argv.index("--seal")
@@ -479,6 +509,8 @@ def run_gui():
 
 
 def main():
+    if "--seal-bound" in sys.argv:
+        sys.exit(cli_seal_bound(sys.argv))
     if "--seal-igs" in sys.argv:
         sys.exit(cli_seal_igs(sys.argv))
     if "--seal" in sys.argv:

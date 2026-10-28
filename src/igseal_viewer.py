@@ -202,6 +202,26 @@ def run_gui():
             die("최초 1회 인터넷 연결이 필요합니다.\n인터넷에 연결한 뒤 다시 실행하세요.")
             return
 
+    # ---- 키-분리 바인딩: pkg_secret 획득(캐시 → 서버). 없으면 못 엶 ----
+    bound_secret = None
+    if hdr.get("bound_key"):
+        bound_secret = core.load_cached_pkg_secret(hdr)
+        if bound_secret is None:
+            sec, st = core.request_pkg_secret(hdr)
+            if st == "ok":
+                bound_secret = sec
+                core.cache_pkg_secret(hdr, sec)   # 이 PC에만 DPAPI 로 묶어 저장
+            elif st == "bound_other":
+                die("이 파일은 다른 PC에서 이미 활성화되어,\n이 컴퓨터에서는 열 수 없습니다.")
+                return
+            elif st == "revoked":
+                die("제작자에 의해 사용이 중지되어 파일이 삭제되었습니다.", destruct=True)
+                return
+            else:  # offline / error
+                die("최초 1회 인터넷 연결이 필요합니다(키 활성화).\n"
+                    "인터넷에 연결한 뒤 다시 실행하세요.")
+                return
+
     # 오프라인 리스(임대) — 온라인이면 기한 갱신, 기한 지나면 재연결 요구
     if core.lease_days_of(hdr):
         if online:
@@ -269,7 +289,10 @@ def run_gui():
 
         def submit(*_):
             try:
-                r = core.unlock(payload, ent.get())
+                if hdr.get("bound_key"):
+                    r = core.unlock_bound(payload, ent.get(), bound_secret)
+                else:
+                    r = core.unlock(payload, ent.get())
             except ValueError:
                 tries["n"] += 1
                 ent.delete(0, "end")

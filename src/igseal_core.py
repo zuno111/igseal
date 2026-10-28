@@ -16,7 +16,7 @@ header_json:
   - hmac = HMAC-SHA256(stub_secret, header의 hmac 제외 필드 canonical) — 평문 헤더 casual 변조 탐지용
 """
 import os, sys, io, json, base64, struct, hmac, hashlib, datetime, subprocess, uuid
-import urllib.request
+import urllib.request, urllib.error
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
@@ -104,6 +104,199 @@ def build_payload(files, password, expiry=None, title="봉인 패키지",
     hdr["hmac"] = _sign_header(hdr)
     hjson = json.dumps(hdr, ensure_ascii=False).encode("utf-8")
     return struct.pack("<I", len(hjson)) + hjson + ct
+
+
+# =====================================================================
+# 키-분리 바인딩 (전문가도 다른 PC로 못 옮김)
+# 핵심: 복호화 키가 파일에 전혀 없음. content_key = scrypt(password + pkg_secret, salt).
+# pkg_secret 은 서버에만 있고, 처음 활성화하는 1개 PC에만 released + 그 PC에 DPAPI로 묶여 저장.
+# 파일만 뜯으면 비번을 알아도 pkg_secret 이 없어 복호화 불가. 다른 PC로 복사해도 서버가 키를 안 주고
+# 로컬 캐시는 DPAPI 로 그 PC에서만 풀림.
+# =====================================================================
+def _derive_content_key(password: str, pkg_secret: bytes, salt: bytes) -> bytes:
+    kdf = Scrypt(salt=salt, length=32, n=SCRYPT_N, r=SCRYPT_R, p=SCRYPT_P)
+    return kdf.derive(password.encode("utf-8") + pkg_secret)
+
+
+def build_bound_payload(files, password, key_server, expiry=None, title="봉인 패키지",
+                        watermark="", max_opens=None, revoke_url="", pkg_id=None,
+                        open_timer_hours=None):
+    """키-분리 봉인. 반환: (payload_bytes, pkg_secret_hex).
+    payload 에는 pkg_secret/content_key 가 없음. pkg_secret_hex 는 key_server 에 등록해야 함."""
+    if not key_server:
+        raise ValueError("키 서버 URL이 필요합니다(키-분리 바인딩).")
+    salt = os.urandom(16)
+    nonce = os.urandom(12)
+    pkg_secret = os.urandom(32)
+    if not pkg_id:
+        pkg_id = uuid.uuid4().hex[:12]
+    key = _derive_content_key(password, pkg_secret, salt)
+    total = sum(len(b) for _, b in files)
+    plain = {
+        "title": title, "expiry": expiry, "watermark": watermark or "",
+        "max_opens": max_opens, "pkg_id": pkg_id,
+        "files": [{"name": n, "size": len(b), "data": base64.b64encode(b).decode("ascii")}
+                  for n, b in files],
+    }
+    ct = AESGCM(key).encrypt(nonce, json.dumps(plain, ensure_ascii=False).encode("utf-8"), None)
+    hdr = {
+        "v": 3, "bound_key": True,
+        "created": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "expiry": expiry, "title": title, "pkg_id": pkg_id,
+        "key_server": key_server.rstrip("/"),
+        "revoke_url": revoke_url or "", "max_opens": max_opens,
+        "require_activation": True, "lease_days": None,
+        "bind_machine": True, "bind_path": "",
+        "open_timer_hours": open_timer_hours,
+        "file_count": len(files), "total_size": total,
+        "kdf": "scrypt", "salt": salt.hex(),
+        "n": SCRYPT_N, "r": SCRYPT_R, "p": SCRYPT_P, "nonce": nonce.hex(),
+    }
+    hdr["hmac"] = _sign_header(hdr)
+    hjson = json.dumps(hdr, ensure_ascii=False).encode("utf-8")
+    payload = struct.pack("<I", len(hjson)) + hjson + ct
+    return payload, pkg_secret.hex()
+
+
+def unlock_bound(payload: bytes, password: str, pkg_secret: bytes):
+    """pkg_secret(서버가 released) 로 복호화. 실패 시 ValueError."""
+    hdr, ct = parse_header(payload)
+    salt = bytes.fromhex(hdr["salt"]); nonce = bytes.fromhex(hdr["nonce"])
+    key = _derive_content_key(password, pkg_secret, salt)
+    try:
+        pt = AESGCM(key).decrypt(nonce, ct, None)
+    except Exception:
+        raise ValueError("비밀번호가 올바르지 않거나 키/파일이 손상되었습니다.")
+    plain = json.loads(pt.decode("utf-8"))
+    return {
+        "title": plain.get("title", ""), "expiry": plain.get("expiry"),
+        "watermark": plain.get("watermark", ""), "max_opens": plain.get("max_opens"),
+        "pkg_id": plain.get("pkg_id", ""),
+        "files": [(f["name"], base64.b64decode(f["data"])) for f in plain["files"]],
+    }
+
+
+# ----- 서버 키 released (처음 활성화하는 1개 PC에만) -----
+def register_pkg_secret(key_server, pkg_id, pkg_secret_hex, secret_key, timeout=8):
+    """제작기: 봉인 직후 pkg_secret 을 키 서버에 등록(비밀키 인증)."""
+    url = key_server.rstrip("/") + "/igseal/register"
+    body = json.dumps({"pkg_id": pkg_id, "pkg_secret": pkg_secret_hex,
+                       "secret_key": secret_key}).encode("utf-8")
+    req = urllib.request.Request(url, data=body, method="POST",
+                                 headers={"Content-Type": "application/json",
+                                          "User-Agent": "igSeal"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+def request_pkg_secret(hdr, timeout=8):
+    """뷰어: 활성화 시 이 PC로 pkg_secret 요청. 서버가 이미 다른 PC에 바인딩했으면 거부.
+    반환: (pkg_secret_bytes or None, status) status in {'ok','bound_other','revoked','offline','error'}"""
+    ks = hdr.get("key_server") or ""
+    if not ks:
+        return (None, "error")
+    url = ks.rstrip("/") + "/igseal/release"
+    body = json.dumps({"pkg_id": pkg_id_of(hdr), "machine_id": machine_id()}).encode("utf-8")
+    req = urllib.request.Request(url, data=body, method="POST",
+                                 headers={"Content-Type": "application/json",
+                                          "User-Agent": "igSeal"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            d = json.loads(r.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        if e.code == 403:
+            return (None, "bound_other")
+        if e.code == 410:
+            return (None, "revoked")
+        return (None, "error")
+    except Exception:
+        return (None, "offline")
+    sec = d.get("pkg_secret")
+    if not sec:
+        return (None, "error")
+    try:
+        return (bytes.fromhex(sec), "ok")
+    except Exception:
+        return (None, "error")
+
+
+# ----- DPAPI 로컬 캐시 (그 PC에서만 복호 가능) -----
+def _dpapi_protect(data: bytes):
+    import ctypes
+    from ctypes import wintypes
+    class DATA_BLOB(ctypes.Structure):
+        _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
+    buf = ctypes.create_string_buffer(data, len(data))
+    blob_in = DATA_BLOB(len(data), ctypes.cast(buf, ctypes.POINTER(ctypes.c_char)))
+    blob_out = DATA_BLOB()
+    # CRYPTPROTECT_LOCAL_MACHINE = 0x4 (그 PC의 모든 유저). 유저 한정이면 0.
+    if not ctypes.windll.crypt32.CryptProtectData(ctypes.byref(blob_in), None, None,
+                                                   None, None, 0, ctypes.byref(blob_out)):
+        raise OSError("CryptProtectData 실패")
+    out = ctypes.string_at(blob_out.pbData, blob_out.cbData)
+    ctypes.windll.kernel32.LocalFree(blob_out.pbData)
+    return out
+
+
+def _dpapi_unprotect(data: bytes):
+    import ctypes
+    from ctypes import wintypes
+    class DATA_BLOB(ctypes.Structure):
+        _fields_ = [("cbData", wintypes.DWORD), ("pbData", ctypes.POINTER(ctypes.c_char))]
+    buf = ctypes.create_string_buffer(data, len(data))
+    blob_in = DATA_BLOB(len(data), ctypes.cast(buf, ctypes.POINTER(ctypes.c_char)))
+    blob_out = DATA_BLOB()
+    if not ctypes.windll.crypt32.CryptUnprotectData(ctypes.byref(blob_in), None, None,
+                                                    None, None, 0, ctypes.byref(blob_out)):
+        raise OSError("CryptUnprotectData 실패")
+    out = ctypes.string_at(blob_out.pbData, blob_out.cbData)
+    ctypes.windll.kernel32.LocalFree(blob_out.pbData)
+    return out
+
+
+def _keycache_path(pkg_id):
+    base = os.environ.get("APPDATA") or os.path.expanduser("~/.config")
+    d = os.path.join(base, "igSeal", "keys")
+    try:
+        os.makedirs(d, exist_ok=True)
+    except Exception:
+        pass
+    return os.path.join(d, pkg_id + ".key")
+
+
+def cache_pkg_secret(hdr, pkg_secret: bytes):
+    """pkg_secret 을 이 PC에만 복호가능하게(DPAPI) 저장. 비윈도우는 평문 fallback(개발용)."""
+    p = _keycache_path(pkg_id_of(hdr))
+    try:
+        if sys.platform.startswith("win"):
+            blob = _dpapi_protect(pkg_secret)
+            with open(p, "wb") as f:
+                f.write(b"DPAPI1\x00\x00" + blob)
+        else:
+            with open(p, "wb") as f:
+                f.write(b"PLAIN1\x00\x00" + pkg_secret)
+        return True
+    except Exception:
+        return False
+
+
+def load_cached_pkg_secret(hdr):
+    """캐시된 pkg_secret 반환(그 PC에서만 DPAPI 복호 성공). 없거나 실패 시 None."""
+    p = _keycache_path(pkg_id_of(hdr))
+    try:
+        with open(p, "rb") as f:
+            raw = f.read()
+    except Exception:
+        return None
+    tag, blob = raw[:8], raw[8:]
+    try:
+        if tag == b"DPAPI1\x00\x00":
+            return _dpapi_unprotect(blob)
+        if tag == b"PLAIN1\x00\x00":
+            return blob
+    except Exception:
+        return None
+    return None
 
 
 def append_to_stub(stub_bytes: bytes, payload: bytes) -> bytes:

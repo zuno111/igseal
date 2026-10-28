@@ -246,5 +246,38 @@ check("48시간 후 만료", c.open_timer_expired(hto, now=t0 + datetime.timedel
 left = c.open_timer_left(hto, now=t0 + datetime.timedelta(hours=10))
 check("남은시간 계산(~38h)", 37.5 < left < 38.5)
 
+# 18. 키-분리 바인딩 (복호화 키가 파일에 없음)
+pay_b, psec_hex = c.build_bound_payload([("secret.txt", "전문가도 못 여는 납품물".encode())],
+                                        "clientpw", key_server="https://igserver.example.com",
+                                        pkg_id="BOUND0001", title="키분리")
+psec = bytes.fromhex(psec_hex)
+# 파일(payload)에 pkg_secret 이 들어있지 않은지 확인
+check("payload에 pkg_secret 없음", psec not in pay_b)
+# pkg_secret 없이는 복호화 불가(비번만으로 안 됨)
+try:
+    c.unlock_bound(pay_b, "clientpw", b"\x00" * 32)
+    check("잘못된 pkg_secret 거부", False)
+except ValueError:
+    check("잘못된 pkg_secret 거부", True)
+# 올바른 pkg_secret(서버가 released) 으로만 복호화
+rb = c.unlock_bound(pay_b, "clientpw", psec)
+check("서버키로 복호화 성공", rb["files"][0][1].decode() == "전문가도 못 여는 납품물")
+# 틀린 비번 + 올바른 키도 거부(2팩터)
+try:
+    c.unlock_bound(pay_b, "wrongpw", psec)
+    check("틀린 비번 거부(2팩터)", False)
+except ValueError:
+    check("틀린 비번 거부(2팩터)", True)
+
+# 19. DPAPI 캐시 (비윈도우는 평문 fallback — 라운드트립만 검증)
+hb, _ = c.parse_header(pay_b)
+check("캐시 저장", c.cache_pkg_secret(hb, psec))
+check("캐시 로드 일치", c.load_cached_pkg_secret(hb) == psec)
+
+# 20. 서버 release 시뮬레이션 (release-once 로직은 서버쪽, 여기선 클라 파싱만)
+#    오프라인/에러 상태 분기 확인
+hb_noserver = dict(hb); hb_noserver["key_server"] = ""
+check("키서버 없으면 error", c.request_pkg_secret(hb_noserver)[1] == "error")
+
 print("\n" + ("ALL PASS" if ok else "SOME FAILED"))
 sys.exit(0 if ok else 1)
