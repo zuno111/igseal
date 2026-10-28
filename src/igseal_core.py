@@ -25,6 +25,11 @@ MAGIC = b"IGSEAL\x00\x00PKGv1\x00\x00\x00"   # 정확히 16바이트
 assert len(MAGIC) == 16, len(MAGIC)
 FOOTER_LEN = 16 + 8
 
+# .igs 전용 파일 포맷(독립 파일, exe 아님). 우리 뷰어만 읽음.
+IGS_MAGIC = b"IGSEAL.IGS\x00v1\x00\x00\x00"   # 16바이트
+assert len(IGS_MAGIC) == 16, len(IGS_MAGIC)
+IGS_EXT = ".igs"
+
 # 평문 헤더 변조 탐지용 공유 비밀(스텁에 내장). 암호학적 보호의 핵심은 아니고
 # hex 에디터로 만료일만 슬쩍 바꾸는 수준을 막는 용도.
 STUB_SECRET = b"igSeal/STUDIO-ig/stub-hmac-secret/2026"
@@ -50,7 +55,8 @@ def _sign_header(hdr: dict) -> str:
 
 def build_payload(files, password, expiry=None, title="봉인 패키지",
                   watermark="", max_opens=None, revoke_url="", pkg_id=None,
-                  require_activation=False, lease_days=None):
+                  require_activation=False, lease_days=None,
+                  bind_machine=False, bind_path="", open_timer_hours=None):
     """files: [(name, bytes)]. expiry: 'YYYY-MM-DD' 또는 None. -> payload bytes
     watermark: 열람/임시파일에 찍을 문구. max_opens: 최대 열람 횟수(None=무제한).
     revoke_url: 원격 폐기 목록 JSON URL(평문 헤더, HMAC 보호). pkg_id: 패키지 식별자."""
@@ -85,6 +91,9 @@ def build_payload(files, password, expiry=None, title="봉인 패키지",
         "max_opens": max_opens,
         "require_activation": bool(require_activation),
         "lease_days": lease_days,
+        "bind_machine": bool(bind_machine),
+        "bind_path": _norm_path(bind_path) if bind_path else "",
+        "open_timer_hours": open_timer_hours,
         "file_count": len(files),
         "total_size": total,
         "kdf": "scrypt",
@@ -496,6 +505,186 @@ def load_mesh_from_bytes(data, ext):
         return obj.dump(concatenate=True)
     except Exception:
         return None
+
+
+# ----- .igs 전용 파일 컨테이너 -----
+# 포맷: [IGS_MAGIC 16][payload_len u64][payload][bind_len u32][bind_json]
+# bind_json 은 처음 열 때 뷰어가 파일에 써넣는 바인딩 정보(복사해도 따라감).
+def write_igs(path: str, payload: bytes, bind: dict = None):
+    with open(path, "wb") as f:
+        f.write(IGS_MAGIC)
+        f.write(struct.pack("<Q", len(payload)))
+        f.write(payload)
+        bj = json.dumps(bind or {}, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        f.write(struct.pack("<I", len(bj)))
+        f.write(bj)
+
+
+def read_igs(path: str):
+    """.igs 에서 payload 추출. 포맷 아니면 None."""
+    try:
+        with open(path, "rb") as f:
+            if f.read(16) != IGS_MAGIC:
+                return None
+            n = struct.unpack("<Q", f.read(8))[0]
+            data = f.read(n)
+            if len(data) != n:
+                return None
+            return data
+    except Exception:
+        return None
+
+
+def read_igs_bind(path: str) -> dict:
+    """.igs 의 바인딩 트레일러 읽기. 없으면 {}."""
+    try:
+        with open(path, "rb") as f:
+            if f.read(16) != IGS_MAGIC:
+                return {}
+            n = struct.unpack("<Q", f.read(8))[0]
+            f.seek(16 + 8 + n)
+            blen_raw = f.read(4)
+            if len(blen_raw) < 4:
+                return {}
+            blen = struct.unpack("<I", blen_raw)[0]
+            if blen == 0:
+                return {}
+            bj = f.read(blen)
+            d = json.loads(bj.decode("utf-8"))
+            return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def write_igs_bind(path: str, bind: dict) -> bool:
+    """payload 는 두고 바인딩 트레일러만 교체(처음 열 때 호출)."""
+    payload = read_igs(path)
+    if payload is None:
+        return False
+    try:
+        bind = dict(bind)
+        bind["hmac"] = hmac.new(STUB_SECRET, json.dumps(
+            {k: v for k, v in bind.items() if k != "hmac"},
+            sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
+            hashlib.sha256).hexdigest()
+        write_igs(path, payload, bind)
+        return True
+    except Exception:
+        return False
+
+
+def _bind_valid(bind: dict) -> bool:
+    if not bind:
+        return False
+    try:
+        want = hmac.new(STUB_SECRET, json.dumps(
+            {k: v for k, v in bind.items() if k != "hmac"},
+            sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode("utf-8"),
+            hashlib.sha256).hexdigest()
+        return want == bind.get("hmac")
+    except Exception:
+        return False
+
+
+def is_igs_file(path: str) -> bool:
+    try:
+        with open(path, "rb") as f:
+            return f.read(16) == IGS_MAGIC
+    except Exception:
+        return False
+
+
+# ----- 머신 바인딩 / 위치 바인딩 -----
+def _norm_path(p: str) -> str:
+    try:
+        return os.path.normcase(os.path.abspath(p))
+    except Exception:
+        return p or ""
+
+
+def machine_id() -> str:
+    """PC 식별자(안정적, 비가역 해시). hostname + MAC(getnode)."""
+    import platform
+    raw = "%s|%s" % (platform.node() or "", uuid.getnode())
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def binding_check(hdr: dict, igs_path: str):
+    """바인딩 검사. 반환: (blocked_reason or None, updated_bind or None)
+    바인딩 정보는 .igs 파일 트레일러에 저장되어 복사해도 따라감(TOFU).
+    machine 바인딩: 처음 연 PC에 고정 — 다른 PC면 'machine'.
+    path 바인딩: 처음 연 절대경로에 고정 — 이동/복사하면 'path'.
+    위반 없고 새로 바인딩해야 하면 updated_bind(dict) 반환 → 호출측이 write_igs_bind."""
+    cur = _norm_path(igs_path)
+    bind = read_igs_bind(igs_path)
+    if bind and not _bind_valid(bind):
+        return ("tamper", None)
+    mid = machine_id()
+    newbind = dict(bind) if bind else {}
+    changed = False
+    if hdr.get("bind_machine"):
+        if bind.get("m"):
+            if bind["m"] != mid:
+                return ("machine", None)
+        else:
+            newbind["m"] = mid; changed = True
+    if hdr.get("bind_path"):
+        if bind.get("p"):
+            if bind["p"] != cur:
+                return ("path", None)
+        else:
+            newbind["p"] = cur; changed = True
+    return (None, newbind if changed else None)
+
+
+# ----- 오픈 타이머 (처음 연 뒤 N시간 후 만료) -----
+def open_timer_expired(hdr, now=None) -> bool:
+    h = hdr.get("open_timer_hours")
+    if not h:
+        return False
+    st = _load_state(hdr)
+    first = st.get("first_open_ts")
+    if not first:
+        return False
+    if now is None:
+        now = datetime.datetime.now()
+    try:
+        t0 = datetime.datetime.strptime(first, "%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return False
+    return now >= t0 + datetime.timedelta(hours=float(h))
+
+
+def mark_first_open(hdr, now=None):
+    h = hdr.get("open_timer_hours")
+    if not h:
+        return
+    st = _load_state(hdr)
+    if st.get("first_open_ts"):
+        return
+    if now is None:
+        now = datetime.datetime.now()
+    st["first_open_ts"] = now.strftime("%Y-%m-%d %H:%M:%S")
+    _save_state(hdr, st)
+
+
+def open_timer_left(hdr, now=None):
+    """남은 시간(시간 단위 float) 또는 None(타이머 없음/미개봉)."""
+    h = hdr.get("open_timer_hours")
+    if not h:
+        return None
+    st = _load_state(hdr)
+    first = st.get("first_open_ts")
+    if not first:
+        return float(h)
+    if now is None:
+        now = datetime.datetime.now()
+    try:
+        t0 = datetime.datetime.strptime(first, "%Y-%m-%d %H:%M:%S")
+    except Exception:
+        return None
+    left = (t0 + datetime.timedelta(hours=float(h)) - now).total_seconds() / 3600.0
+    return max(0.0, left)
 
 
 # ----- 자기삭제 -----

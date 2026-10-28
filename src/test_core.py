@@ -188,5 +188,63 @@ check("워터마크 삽입으로 신호 에너지 증가", e_after > e_before * 
 # 비WAV/손상은 원본 반환
 check("비WAV는 원본 반환", c.audio_watermark_wav(b"not a wav", "T") == b"not a wav")
 
+# 14. .igs 전용 파일 컨테이너
+igs = os.path.join(TMP, "deliver.igs")
+pay_igs = c.build_payload([("spec.txt", b"IGS content")], "igspw",
+                          pkg_id="IGSFILE01", bind_machine=True, open_timer_hours=48)
+c.write_igs(igs, pay_igs)
+check("is_igs_file 인식", c.is_igs_file(igs))
+check("read_igs 추출", c.read_igs(igs) == pay_igs)
+check("일반파일 is_igs False", not c.is_igs_file(p))  # p = 앞서 만든 exe
+r_igs = c.unlock(c.read_igs(igs), "igspw")
+check(".igs 해제", r_igs["files"][0][1] == b"IGS content")
+
+# 15. 머신 바인딩 (파일 트레일러 TOFU)
+higs, _ = c.parse_header(pay_igs)
+# 첫 개봉: 바인딩 비어있음 -> 통과 + newbind 반환
+reason, nb = c.binding_check(higs, igs)
+check("첫 개봉 통과", reason is None and nb is not None and "m" in nb)
+c.write_igs_bind(igs, nb)
+# 둘째 개봉(같은 PC): 통과
+reason2, nb2 = c.binding_check(higs, igs)
+check("같은 PC 재개봉 통과", reason2 is None)
+# 다른 PC 위조: 트레일러의 m 을 바꿔치기(+hmac 재계산 불가) -> tamper 또는 machine
+bad = c.read_igs_bind(igs); bad["m"] = "DIFFERENTPC00000"
+c.write_igs(igs, pay_igs, bad)  # hmac 안 맞는 트레일러
+reason3, _ = c.binding_check(higs, igs)
+check("바인딩 변조 탐지", reason3 == "tamper")
+# 올바른 hmac으로 다른 머신 기록된 파일 -> machine 차단
+c.write_igs(igs, pay_igs)  # 초기화
+c.write_igs_bind(igs, {"m": "OTHERMACHINE0000"})
+reason4, _ = c.binding_check(higs, igs)
+check("다른 PC 차단", reason4 == "machine")
+
+# 16. 경로 바인딩
+igs2 = os.path.join(TMP, "p1.igs")
+pay_p = c.build_payload([("a", b"x")], "pw", pkg_id="PATHBIND1", bind_path="")
+# bind_path 켜려면 hdr에 bind_path 플래그가 있어야 함 -> 직접 구성
+hp, _ = c.parse_header(pay_p); hp["bind_path"] = "dummy"  # path 바인딩 on
+c.write_igs(igs2, pay_p)
+rp, nbp = c.binding_check(hp, igs2)
+check("경로 첫 개봉 통과", rp is None and nbp and "p" in nbp)
+c.write_igs_bind(igs2, nbp)
+# 다른 경로로 복사
+igs3 = os.path.join(TMP, "moved.igs")
+import shutil as _sh; _sh.copy(igs2, igs3)
+rp2, _ = c.binding_check(hp, igs3)
+check("다른 경로로 복사시 차단", rp2 == "path")
+
+# 17. 오픈 타이머 (처음 연 뒤 N시간)
+hto, _ = c.parse_header(pay_igs)  # open_timer_hours=48
+for f in glob.glob(os.path.join(cfgbak, "igSeal", "IGSFILE01.dat")):
+    os.remove(f)
+check("미개봉은 타이머 만료 아님", not c.open_timer_expired(hto))
+t0 = datetime.datetime(2026, 1, 1, 12, 0, 0)
+c.mark_first_open(hto, now=t0)
+check("개봉 직후 만료 아님", not c.open_timer_expired(hto, now=t0 + datetime.timedelta(hours=47)))
+check("48시간 후 만료", c.open_timer_expired(hto, now=t0 + datetime.timedelta(hours=49)))
+left = c.open_timer_left(hto, now=t0 + datetime.timedelta(hours=10))
+check("남은시간 계산(~38h)", 37.5 < left < 38.5)
+
 print("\n" + ("ALL PASS" if ok else "SOME FAILED"))
 sys.exit(0 if ok else 1)

@@ -89,6 +89,25 @@ def seal(paths, out_exe, password, expiry=None, title="봉인 패키지", stub_b
     return len(files), len(exe), pkg_id
 
 
+def seal_igs(paths, out_igs, password, expiry=None, title="봉인 패키지",
+             watermark="", max_opens=None, revoke_url="", require_activation=False,
+             lease_days=None, bind_machine=True, bind_path=False, open_timer_hours=None):
+    """전용 .igs 파일로 봉인(뷰어가 확장자 연결로 염). 머신/경로 바인딩·오픈타이머."""
+    files = gather_files(paths)
+    if not files:
+        raise RuntimeError("봉인할 파일이 없습니다.")
+    import uuid as _uuid
+    pkg_id = _uuid.uuid4().hex[:12]
+    payload = core.build_payload(
+        files, password, expiry=expiry, title=title, watermark=watermark,
+        max_opens=max_opens, revoke_url=revoke_url, pkg_id=pkg_id,
+        require_activation=require_activation, lease_days=lease_days,
+        bind_machine=bind_machine, bind_path=("yes" if bind_path else ""),
+        open_timer_hours=open_timer_hours)
+    core.write_igs(out_igs, payload)
+    return len(files), os.path.getsize(out_igs), pkg_id
+
+
 # ---------------- CLI / selftest ----------------
 def cli_seal(argv):
     # --seal SRC OUT PASSWORD [EXPIRY]
@@ -97,6 +116,17 @@ def cli_seal(argv):
     exp = argv[i + 4] if len(argv) > i + 4 and not argv[i + 4].startswith("--") else None
     n, sz, pid = seal([src], out, pw, expiry=exp, title="CLI 봉인")
     print("SEALED files=%d size=%d pkg_id=%s -> %s" % (n, sz, pid, out))
+    return 0
+
+
+def cli_seal_igs(argv):
+    # --seal-igs SRC OUT.igs PASSWORD [EXPIRY]
+    i = argv.index("--seal-igs")
+    src = argv[i + 1]; out = argv[i + 2]; pw = argv[i + 3]
+    exp = argv[i + 4] if len(argv) > i + 4 and not argv[i + 4].startswith("--") else None
+    n, sz, pid = seal_igs([src], out, pw, expiry=exp, title="CLI IGS",
+                          bind_machine=True, open_timer_hours=48)
+    print("SEALED_IGS files=%d size=%d pkg_id=%s -> %s" % (n, sz, pid, out))
     return 0
 
 
@@ -135,7 +165,7 @@ def run_gui():
     sel_paths = []
 
     root = tk.Tk(); root.title(APP_NAME); root.configure(bg=BG)
-    W, H = 720, 820
+    W, H = 720, 980
     x = (root.winfo_screenwidth() - W) // 2; y = max(0, (root.winfo_screenheight() - H) // 2)
     root.geometry("%dx%d+%d+%d" % (W, H, x, y)); root.minsize(660, 700)
 
@@ -244,6 +274,28 @@ def run_gui():
     tk.Label(rl, text="일. 이 기간마다 인터넷 재연결 필요. 비우면 리스 안 씀(활성화/폐기엔 URL 필요)",
              font=(FONT, 8), bg=CARD, fg=SUB).pack(side="left", padx=6)
 
+    # 5. 전용 .igs 파일 + 이동 금지 + 자동 타이머 삭제
+    c5 = card(root, "5. 전용 .igs 파일 (이동 금지 · 타이머 삭제)")
+    igs_mode = tk.BooleanVar(value=True)
+    r5a = tk.Frame(c5, bg=CARD); r5a.pack(fill="x", padx=14, pady=(2, 0))
+    tk.Checkbutton(r5a, text=".igs 전용 파일로 만들기 (우리 뷰어로만 열림)", variable=igs_mode,
+                   font=(FONT, 9), bg=CARD, fg=FG, selectcolor=BG, activebackground=CARD,
+                   activeforeground=FG).pack(side="left")
+    bind_m = tk.BooleanVar(value=True); bind_p = tk.BooleanVar(value=False)
+    r5b = tk.Frame(c5, bg=CARD); r5b.pack(fill="x", padx=14, pady=(2, 0))
+    tk.Checkbutton(r5b, text="다른 PC로 복사 금지(처음 연 PC 고정)", variable=bind_m,
+                   font=(FONT, 9), bg=CARD, fg=FG, selectcolor=BG, activebackground=CARD,
+                   activeforeground=FG).pack(side="left")
+    tk.Checkbutton(r5b, text="다른 폴더·USB로 이동 금지(처음 연 위치 고정)", variable=bind_p,
+                   font=(FONT, 9), bg=CARD, fg=FG, selectcolor=BG, activebackground=CARD,
+                   activeforeground=FG).pack(side="left", padx=(14, 0))
+    r5c = tk.Frame(c5, bg=CARD); r5c.pack(fill="x", padx=14, pady=(2, 10))
+    tk.Label(r5c, text="개봉 후 삭제", font=(FONT, 9), bg=CARD, fg=SUB, width=11, anchor="w").pack(side="left")
+    e_timer = tk.Entry(r5c, font=(FONT, 10), bg=BG, fg=FG, relief="flat", width=8,
+                       insertbackground=FG, justify="center"); e_timer.pack(side="left", ipady=3)
+    tk.Label(r5c, text="시간. 처음 연 뒤 이 시간이 지나면 자동 삭제. 비우면 안 씀",
+             font=(FONT, 8), bg=CARD, fg=SUB).pack(side="left", padx=6)
+
     status = tk.Label(root, text="", font=(FONT, 9), bg=BG, fg=SUB)
     status.pack(pady=(4, 0))
 
@@ -263,13 +315,29 @@ def run_gui():
             except Exception:
                 messagebox.showwarning(APP_NAME, "사용기한 날짜 형식이 올바르지 않습니다 (YYYY-MM-DD)."); return
         title = e_title.get().strip() or "납품 패키지"
-        default_name = title.replace(" ", "_") + "_봉인.exe"
-        out = filedialog.asksaveasfilename(title="봉인 파일 저장 위치",
-                                           defaultextension=".exe",
-                                           initialfile=default_name,
-                                           filetypes=[("실행파일", "*.exe")])
+        use_igs = igs_mode.get()
+        if use_igs:
+            default_name = title.replace(" ", "_") + "_봉인.igs"
+            out = filedialog.asksaveasfilename(title="봉인 파일 저장 위치",
+                                               defaultextension=".igs",
+                                               initialfile=default_name,
+                                               filetypes=[("igSeal 봉인 파일", "*.igs")])
+        else:
+            default_name = title.replace(" ", "_") + "_봉인.exe"
+            out = filedialog.asksaveasfilename(title="봉인 파일 저장 위치",
+                                               defaultextension=".exe",
+                                               initialfile=default_name,
+                                               filetypes=[("실행파일", "*.exe")])
         if not out:
             return
+        timer_h = None
+        if e_timer.get().strip():
+            try:
+                timer_h = float(e_timer.get().strip())
+                if timer_h <= 0:
+                    raise ValueError
+            except Exception:
+                messagebox.showwarning(APP_NAME, "개봉 후 삭제 시간은 양수여야 합니다."); return
         wm = e_wm.get().strip()
         mo = None
         if e_opens.get().strip():
@@ -293,9 +361,16 @@ def run_gui():
             messagebox.showwarning(APP_NAME, "활성화/리스를 쓰려면 원격폐기 URL이 필요합니다."); return
         status.configure(text="봉인 중...", fg=SUB); root.update()
         try:
-            n, sz, pid = seal(sel_paths, out, pw, expiry=exp, title=title,
-                              watermark=wm, max_opens=mo, revoke_url=rv,
-                              require_activation=req_act, lease_days=lease)
+            if use_igs:
+                n, sz, pid = seal_igs(sel_paths, out, pw, expiry=exp, title=title,
+                                      watermark=wm, max_opens=mo, revoke_url=rv,
+                                      require_activation=req_act, lease_days=lease,
+                                      bind_machine=bind_m.get(), bind_path=bind_p.get(),
+                                      open_timer_hours=timer_h)
+            else:
+                n, sz, pid = seal(sel_paths, out, pw, expiry=exp, title=title,
+                                  watermark=wm, max_opens=mo, revoke_url=rv,
+                                  require_activation=req_act, lease_days=lease)
         except Exception as e:
             messagebox.showerror(APP_NAME, "봉인 실패:\n" + str(e)); status.configure(text=""); return
         # 제작자 대장 기록
@@ -404,6 +479,8 @@ def run_gui():
 
 
 def main():
+    if "--seal-igs" in sys.argv:
+        sys.exit(cli_seal_igs(sys.argv))
     if "--seal" in sys.argv:
         sys.exit(cli_seal(sys.argv))
     if os.environ.get("IGSEAL_SELFTEST") == "1" or "--selftest" in sys.argv:

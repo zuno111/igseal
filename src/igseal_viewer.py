@@ -49,7 +49,10 @@ def _report(msg, code):
 def selftest():
     path = os.environ.get("IGSEAL_SELFTEST_FILE") or _self_path()
     pw = os.environ.get("IGSEAL_SELFTEST_PW", "")
-    payload = core.read_payload_from_file(path)
+    if path.lower().endswith(core.IGS_EXT) or core.is_igs_file(path):
+        payload = core.read_igs(path)
+    else:
+        payload = core.read_payload_from_file(path)
     if payload is None:
         return _report("SELFTEST FAIL: payload 없음 (file=%s)" % path, 1)
     hdr, _ = core.parse_header(payload)
@@ -90,8 +93,25 @@ def run_gui():
     except Exception:
         HAVE_MESH = False
 
-    self_path = _self_path()
-    payload = core.read_payload_from_file(self_path)
+    # 소스 결정: 인자로 .igs 가 오면(확장자 연결) 그 파일을, 아니면 자기 exe 꼬리 payload.
+    igs_arg = None
+    for a in sys.argv[1:]:
+        if a and not a.startswith("-") and a.lower().endswith(core.IGS_EXT) and os.path.isfile(a):
+            igs_arg = os.path.abspath(a); break
+    if igs_arg is None:
+        for a in sys.argv[1:]:
+            if a and os.path.isfile(a) and core.is_igs_file(a):
+                igs_arg = os.path.abspath(a); break
+
+    if igs_arg:
+        target_path = igs_arg           # 만료 시 삭제 대상 = .igs 파일
+        payload = core.read_igs(igs_arg)
+        is_igs = True
+    else:
+        target_path = _self_path()
+        payload = core.read_payload_from_file(target_path)
+        is_igs = False
+    self_path = target_path
 
     # 전문 포맷을 외부 프로그램으로 열 때 쓰는 임시 작업폴더. 닫을 때 전량 삭제.
     import tempfile, shutil, atexit, subprocess as _sp, stat as _stat
@@ -197,6 +217,26 @@ def run_gui():
         die("사용 기간이 만료되어 파일이 삭제되었습니다.", destruct=True)
         return
 
+    # ---- 위치/PC 바인딩 (다른 데로 옮기면 거부) — .igs 파일만 ----
+    if is_igs:
+        reason, newbind = core.binding_check(hdr, target_path)
+        if reason == "machine":
+            die("이 파일은 처음 연 PC에서만 열 수 있습니다.\n다른 컴퓨터로 복사된 파일은 열 수 없습니다.")
+            return
+        if reason == "path":
+            die("이 파일은 처음 연 위치에서만 열 수 있습니다.\n다른 폴더·USB로 옮긴 파일은 열 수 없습니다.")
+            return
+        if reason == "tamper":
+            die("파일 바인딩 정보가 손상되었습니다. 제작자에게 다시 받아주세요.")
+            return
+        if newbind:
+            core.write_igs_bind(target_path, newbind)   # 최초 개봉 시 PC·위치 고정
+
+    # ---- 오픈 타이머 (처음 연 뒤 N시간 후 자동 삭제) ----
+    if core.open_timer_expired(hdr):
+        die("개봉 후 허용 시간이 지나 파일이 삭제되었습니다.", destruct=True)
+        return
+
     # ---- 열람 횟수 제한 ----
     if core.opens_exceeded(hdr):
         die("허용된 열람 횟수를 모두 사용했습니다.\n제작자에게 문의하세요.")
@@ -251,8 +291,9 @@ def run_gui():
     if state["data"] is None:
         os._exit(0)
 
-    # 열람 1회 기록
+    # 열람 1회 기록 + 오픈 타이머 최초 개봉 시각 기록
     core.record_open(hdr)
+    core.mark_first_open(hdr)
 
     # ---- 메인 뷰어 ----
     data = state["data"]
@@ -673,9 +714,50 @@ def run_gui():
     root.mainloop()
 
 
+def register_file_association():
+    """윈도우 HKCU 에 .igs 확장자를 이 뷰어로 연결(관리자 권한 불필요)."""
+    if not sys.platform.startswith("win"):
+        return False, "윈도우에서만 지원"
+    try:
+        import winreg
+        exe = _self_path()
+        progid = "igSeal.Sealed"
+        # 확장자 -> ProgID
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Classes\.igs") as k:
+            winreg.SetValue(k, "", winreg.REG_SZ, progid)
+        # ProgID 설명 + 아이콘 + 실행 명령
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Classes\%s" % progid) as k:
+            winreg.SetValue(k, "", winreg.REG_SZ, "igSeal 봉인 파일")
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER,
+                              r"Software\Classes\%s\DefaultIcon" % progid) as k:
+            winreg.SetValue(k, "", winreg.REG_SZ, '"%s",0' % exe)
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER,
+                              r"Software\Classes\%s\shell\open\command" % progid) as k:
+            winreg.SetValue(k, "", winreg.REG_SZ, '"%s" "%%1"' % exe)
+        # 탐색기 캐시 갱신
+        try:
+            import ctypes
+            ctypes.windll.shell32.SHChangeNotify(0x08000000, 0, None, None)
+        except Exception:
+            pass
+        return True, exe
+    except Exception as e:
+        return False, str(e)
+
+
 def main():
     if os.environ.get("IGSEAL_SELFTEST") == "1" or "--selftest" in sys.argv:
         sys.exit(selftest())
+    if "--register" in sys.argv:
+        okr, info = register_file_association()
+        print(("REGISTERED " if okr else "REGISTER_FAIL ") + str(info))
+        sys.exit(0 if okr else 1)
+    # GUI 실행 전, 윈도우에서 .igs 연결이 없으면 조용히 1회 자가등록
+    if sys.platform.startswith("win"):
+        try:
+            register_file_association()
+        except Exception:
+            pass
     try:
         run_gui()
     except SystemExit:
