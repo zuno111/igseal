@@ -4,14 +4,30 @@
 import os, sys, subprocess, tempfile, traceback
 
 
+_DIAG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dist", "diag.txt")
+
+
+def diag(msg):
+    try:
+        with open(_DIAG, "a", encoding="utf-8") as f:
+            f.write(str(msg) + "\n")
+    except Exception:
+        pass
+
+
 def err(msg):
-    # GitHub Actions 애너테이션으로 노출(로그 zip 못 받아도 읽힘)
     print("::error::" + str(msg).replace("\n", " ")[:400])
+    diag("ERROR: " + str(msg))
 
 
 def main():
     HERE = os.path.dirname(os.path.abspath(__file__))
     DIST = os.path.join(HERE, "dist")
+    try:
+        open(_DIAG, "w").close()
+    except Exception:
+        pass
+    diag("dist 목록: " + ", ".join(sorted(os.listdir(DIST))))
     packager = os.path.join(DIST, "igSeal-Packager.exe")
     viewer = os.path.join(DIST, "igSeal-Viewer.exe")
     if not os.path.isfile(packager):
@@ -47,10 +63,12 @@ def main():
     except Exception as e:
         err("뷰어 실행 예외: " + repr(e)); return 1
     out = open(res, encoding="utf-8").read().strip() if os.path.exists(res) else ""
+    diag("뷰어 exit=%d result=%r stdout=%r stderr=%r" % (p2.returncode, out, (p2.stdout or ""), (p2.stderr or "")))
     if p2.returncode != 0 or "SELFTEST PASS" not in out:
         err("뷰어 selftest 실패 exit=%d result=%r stdout=%r stderr=%r"
             % (p2.returncode, out, (p2.stdout or "")[:200], (p2.stderr or "")[:200])); return 1
 
+    diag("OK PASS")
     print("OK: 제작기 -> .igs -> 뷰어 복호화 통과:", out)
     return 0
 
