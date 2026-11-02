@@ -475,11 +475,41 @@ def run_gui():
                     "<Control-x>", "<Control-X>", "<Button-3>", "<<Copy>>", "<<Cut>>"):
             t.bind(seq, block)
 
+    def _canvas_watermark(cv, w, h):
+        """캔버스에 반투명 느낌의 대각선 반복 워터마크 텍스트(PIL 불필요)."""
+        if not watermark:
+            return
+        step_x = max(180, w // 3); step_y = max(110, h // 4)
+        for yy in range(0, h + step_y, step_y):
+            for xx in range(0, w + step_x, step_x):
+                cv.create_text(xx, yy, text=watermark, fill="#3a4050",
+                               font=(FONT, 11), angle=30, anchor="center")
+
     def show_image(data, name):
         clear_prev()
+        ext = os.path.splitext(name)[1].lower()
+        # PNG·GIF 등 Tk 기본 지원 포맷은 PIL 없이 렌더(가볍고 어디서나 동작).
+        if ext in (".png", ".gif", ".ppm", ".pgm"):
+            try:
+                base = tk.PhotoImage(data=base64.b64encode(data).decode("ascii"))
+            except Exception:
+                base = None
+            if base is not None:
+                cw = max(prev.winfo_width(), 400); ch = max(prev.winfo_height(), 300)
+                # 너무 크면 정수배 축소(subsample)
+                fx = max(1, (base.width() // cw) + 1); fy = max(1, (base.height() // ch) + 1)
+                fac = max(fx, fy)
+                shown = base.subsample(fac) if fac > 1 else base
+                cv = tk.Canvas(prev, bg=CARD, highlightthickness=0); cv.pack(fill="both", expand=True)
+                img_ref["img"] = (base, shown)
+                cv.create_image(cw // 2, ch // 2, image=shown, anchor="center")
+                _canvas_watermark(cv, cw, ch)
+                cv.bind("<Button-3>", block)
+                return
+        # 그 외 포맷(JPEG/BMP/WebP 등)은 PIL 사용
         if not ensure_pil():
-            tk.Label(prev, text="이미지 미리보기 모듈 없음", font=(FONT, 11),
-                     bg=CARD, fg=SUB).pack(expand=True)
+            tk.Label(prev, text="이 이미지 형식은 미리보기 모듈이 필요합니다",
+                     font=(FONT, 11), bg=CARD, fg=SUB).pack(expand=True)
             return
         try:
             im = L.Image.open(io.BytesIO(data)); im.load()
