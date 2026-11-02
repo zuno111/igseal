@@ -8,7 +8,7 @@ SRC = os.path.join(ROOT, 'src')
 
 datas, binaries, hidden = [], [], []
 for pkg in ['PIL', 'fitz', 'pymupdf', 'cryptography', 'numpy',
-            'imageio', 'imageio_ffmpeg', 'trimesh']:
+            'imageio', 'imageio_ffmpeg', 'av', 'trimesh']:
     try:
         d, b, h = collect_all(pkg)
         datas += d; binaries += b; hidden += h

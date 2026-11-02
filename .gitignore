@@ -3,3 +3,7 @@ build/dist/
 __pycache__/
 *.pyc
 *.spec.bak
+
+# 뷰어 런타임 크래시 로그(개발 중 생성)
+src/igseal_viewer_error.log
+*_error.log

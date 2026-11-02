@@ -591,36 +591,61 @@ def run_gui():
         info = tk.Label(bar, text="재생 중...", font=(FONT, 9), bg=CARD, fg=SUB)
         info.pack(side="left")
 
-        try:
-            meta = _lazy["iio3"].immeta(vpath, plugin="pyav")
-            fps = float(meta.get("fps", 24)) or 24
-        except Exception:
-            fps = 24.0
+        # 디코드 백엔드 선택: PyAV(av) 우선, 없으면 imageio-ffmpeg 폴백.
+        # 첫 프레임을 실제로 읽어 작동하는 플러그인만 채택(검은화면 대신 원인 노출).
+        frames_iter = {"it": None, "plugin": None, "err": ""}
+
+        def _try_open(plugin):
+            try:
+                it = _lazy["iio3"].imiter(vpath, plugin=plugin)
+                first = next(it)
+                return it, first
+            except Exception as e:
+                frames_iter["err"] = "%s: %s" % (plugin, e)
+                return None, None
+
+        fps = 24.0
+        it0 = first0 = None
+        for _plug in ("pyav", "FFMPEG"):
+            it0, first0 = _try_open(_plug)
+            if it0 is not None:
+                frames_iter["plugin"] = _plug
+                try:
+                    meta = _lazy["iio3"].immeta(vpath, plugin=_plug)
+                    fps = float(meta.get("fps", 24)) or 24
+                except Exception:
+                    fps = 24.0
+                break
+        if it0 is None:
+            canv.destroy()
+            tk.Label(wrap, text="영상 디코드 실패\n%s" % frames_iter["err"],
+                     bg="#000", fg="#f88", font=(FONT, 10), justify="left").pack(
+                     fill="both", expand=True)
+            info.configure(text="재생 불가")
+            return
+        frames_iter["it"] = it0
         delay = max(15, int(1000 / fps))
-        frames_iter = {"it": None}
+        pending = {"frame": first0}
 
         def _open_iter():
-            frames_iter["it"] = _lazy["iio3"].imiter(vpath, plugin="pyav")
-
-        try:
-            _open_iter()
-        except Exception as e:
-            tk.Label(prev, text="영상 디코드 실패: %s" % e, bg=CARD, fg=SUB,
-                     font=(FONT, 10)).pack(expand=True); return
+            frames_iter["it"] = _lazy["iio3"].imiter(vpath, plugin=frames_iter["plugin"])
 
         def loop():
             if play["stop"] or not st["playing"]:
                 return
-            try:
-                frame = next(frames_iter["it"])
-            except StopIteration:
-                _open_iter()  # 반복 재생
+            if pending["frame"] is not None:
+                frame = pending["frame"]; pending["frame"] = None
+            else:
                 try:
                     frame = next(frames_iter["it"])
+                except StopIteration:
+                    _open_iter()  # 반복 재생
+                    try:
+                        frame = next(frames_iter["it"])
+                    except Exception:
+                        return
                 except Exception:
                     return
-            except Exception:
-                return
             try:
                 im = L.Image.fromarray(frame)
                 cw = max(canv.winfo_width(), 320); ch = max(canv.winfo_height(), 240)
