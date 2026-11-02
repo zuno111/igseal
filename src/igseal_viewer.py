@@ -80,18 +80,31 @@ def run_gui():
         HAVE_PDF = True
     except Exception:
         HAVE_PDF = False
-    try:
-        import imageio.v3 as iio3
-        import imageio_ffmpeg  # 정적 ffmpeg 내장
-        HAVE_VIDEO = True
-    except Exception:
-        HAVE_VIDEO = False
-    try:
-        import trimesh  # noqa
-        import numpy as _np  # noqa
-        HAVE_MESH = True
-    except Exception:
-        HAVE_MESH = False
+    # 무거운 라이브러리(numpy/imageio/trimesh)는 시작 시 불러오지 않고,
+    # 해당 포맷(영상/3D)을 실제로 열 때만 지연 로딩한다. 시작이 빨라지고,
+    # 선택 라이브러리에 문제가 있어도 비번창·문서·이미지 열람은 정상 동작.
+    _lazy = {"video": None, "iio3": None, "mesh": None}
+
+    def ensure_video():
+        if _lazy["video"] is None:
+            try:
+                import imageio.v3 as iio3
+                import imageio_ffmpeg  # noqa (정적 ffmpeg 내장)
+                _lazy["iio3"] = iio3
+                _lazy["video"] = True
+            except Exception:
+                _lazy["video"] = False
+        return _lazy["video"]
+
+    def ensure_mesh():
+        if _lazy["mesh"] is None:
+            try:
+                import trimesh  # noqa
+                import numpy  # noqa
+                _lazy["mesh"] = True
+            except Exception:
+                _lazy["mesh"] = False
+        return _lazy["mesh"]
 
     # 소스 결정: 인자로 .igs 가 오면(확장자 연결) 그 파일을, 아니면 자기 exe 꼬리 payload.
     igs_arg = None
@@ -501,7 +514,7 @@ def run_gui():
     def show_video(data, name):
         clear_prev()
         play["stop"] = False
-        if not (HAVE_VIDEO and HAVE_PIL):
+        if not (ensure_video() and HAVE_PIL):
             tk.Label(prev, text="영상 미리보기 모듈이 없습니다", font=(FONT, 11),
                      bg=CARD, fg=SUB).pack(expand=True)
             return
@@ -537,7 +550,7 @@ def run_gui():
         info.pack(side="left")
 
         try:
-            meta = iio3.immeta(vpath, plugin="pyav")
+            meta = _lazy["iio3"].immeta(vpath, plugin="pyav")
             fps = float(meta.get("fps", 24)) or 24
         except Exception:
             fps = 24.0
@@ -545,7 +558,7 @@ def run_gui():
         frames_iter = {"it": None}
 
         def _open_iter():
-            frames_iter["it"] = iio3.imiter(vpath, plugin="pyav")
+            frames_iter["it"] = _lazy["iio3"].imiter(vpath, plugin="pyav")
 
         try:
             _open_iter()
@@ -583,7 +596,7 @@ def run_gui():
 
     def show_mesh(data, name):
         clear_prev()
-        if not (HAVE_MESH and HAVE_PIL):
+        if not (ensure_mesh() and HAVE_PIL):
             tk.Label(prev, text="3D 미리보기 모듈이 없습니다", font=(FONT, 11),
                      bg=CARD, fg=SUB).pack(expand=True)
             return
