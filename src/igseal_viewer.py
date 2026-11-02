@@ -70,20 +70,34 @@ def selftest():
 def run_gui():
     import tkinter as tk
     from tkinter import ttk, messagebox
-    try:
-        from PIL import Image, ImageTk
-        HAVE_PIL = True
-    except Exception:
-        HAVE_PIL = False
-    try:
-        import fitz  # PyMuPDF (PDF 렌더)
-        HAVE_PDF = True
-    except Exception:
-        HAVE_PDF = False
-    # 무거운 라이브러리(numpy/imageio/trimesh)는 시작 시 불러오지 않고,
-    # 해당 포맷(영상/3D)을 실제로 열 때만 지연 로딩한다. 시작이 빨라지고,
-    # 선택 라이브러리에 문제가 있어도 비번창·문서·이미지 열람은 정상 동작.
+
+    # 무거운 라이브러리(PIL/fitz/numpy/imageio/trimesh)는 시작 시 불러오지 않고,
+    # 해당 포맷(이미지/PDF/영상/3D)을 실제로 열 때만 지연 로딩한다.
+    # 시작이 빨라지고, 선택 라이브러리에 문제가 있어도 비번창·문서·텍스트 열람은 정상.
+    class _L:
+        pass
+    L = _L()
     _lazy = {"video": None, "iio3": None, "mesh": None}
+
+    def ensure_pil():
+        if getattr(L, "pil", None) is None:
+            try:
+                from PIL import Image, ImageTk, ImageDraw, ImageFont
+                L.Image, L.ImageTk, L.ImageDraw, L.ImageFont = Image, ImageTk, ImageDraw, ImageFont
+                L.pil = True
+            except Exception:
+                L.pil = False
+        return L.pil
+
+    def ensure_pdf():
+        if getattr(L, "pdf", None) is None:
+            try:
+                import fitz  # PyMuPDF
+                L.fitz = fitz
+                L.pdf = True
+            except Exception:
+                L.pdf = False
+        return L.pdf
 
     def ensure_video():
         if _lazy["video"] is None:
@@ -412,31 +426,30 @@ def run_gui():
 
     def _wm(im):
         """PIL 이미지에 반투명 대각선 반복 워터마크 합성."""
-        if not watermark or not HAVE_PIL:
+        if not watermark or not ensure_pil():
             return im
         try:
-            from PIL import ImageDraw, ImageFont
             base = im.convert("RGBA")
             W_, H_ = base.size
-            layer = Image.new("RGBA", base.size, (0, 0, 0, 0))
-            dr = ImageDraw.Draw(layer)
+            layer = L.Image.new("RGBA", base.size, (0, 0, 0, 0))
+            dr = L.ImageDraw.Draw(layer)
             fsize = max(16, W_ // 28)
             font = None
             for fp in ("malgun.ttf", "C:/Windows/Fonts/malgun.ttf", "arial.ttf",
                        "DejaVuSans.ttf"):
                 try:
-                    font = ImageFont.truetype(fp, fsize); break
+                    font = L.ImageFont.truetype(fp, fsize); break
                 except Exception:
                     continue
             if font is None:
-                font = ImageFont.load_default()
+                font = L.ImageFont.load_default()
             step_x = max(220, W_ // 3)
             step_y = max(140, H_ // 4)
             for yy in range(0, H_ + step_y, step_y):
                 for xx in range(-step_x, W_ + step_x, step_x):
                     dr.text((xx, yy), watermark, font=font, fill=(255, 255, 255, 60))
             layer = layer.rotate(30, expand=0)
-            out = Image.alpha_composite(base, layer)
+            out = L.Image.alpha_composite(base, layer)
             return out.convert("RGB")
         except Exception:
             return im
@@ -464,12 +477,12 @@ def run_gui():
 
     def show_image(data, name):
         clear_prev()
-        if not HAVE_PIL:
+        if not ensure_pil():
             tk.Label(prev, text="이미지 미리보기 모듈 없음", font=(FONT, 11),
                      bg=CARD, fg=SUB).pack(expand=True)
             return
         try:
-            im = Image.open(io.BytesIO(data)); im.load()
+            im = L.Image.open(io.BytesIO(data)); im.load()
             im = _wm(im)
         except Exception:
             tk.Label(prev, text="이미지를 열 수 없습니다", font=(FONT, 11),
@@ -478,14 +491,14 @@ def run_gui():
         cw = max(prev.winfo_width(), 400) - 24
         ch = max(prev.winfo_height(), 300) - 24
         im.thumbnail((cw, ch))
-        ph = ImageTk.PhotoImage(im)
+        ph = L.ImageTk.PhotoImage(im)
         img_ref["img"] = ph
         lbl = tk.Label(prev, image=ph, bg=CARD); lbl.pack(expand=True)
         lbl.bind("<Button-3>", block)
 
     def show_pdf(data):
         clear_prev()
-        if not HAVE_PDF:
+        if not ensure_pdf():
             tk.Label(prev, text="PDF 미리보기 모듈이 없습니다 (추출 차단)",
                      font=(FONT, 11), bg=CARD, fg=SUB).pack(expand=True)
             return
@@ -494,15 +507,14 @@ def run_gui():
         sb.pack(side="right", fill="y"); cv.pack(side="left", fill="both", expand=True)
         inner = tk.Frame(cv, bg=CARD); cv.create_window((0, 0), window=inner, anchor="nw")
         try:
-            doc = fitz.open(stream=data, filetype="pdf")
+            doc = L.fitz.open(stream=data, filetype="pdf")
             keep = []
             for pg in doc:
                 pix = pg.get_pixmap(dpi=110)
-                from PIL import Image as _I
-                im = _I.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                im = L.Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
                 im = _wm(im)
                 im.thumbnail((640, 2000))
-                ph = ImageTk.PhotoImage(im); keep.append(ph)
+                ph = L.ImageTk.PhotoImage(im); keep.append(ph)
                 tk.Label(inner, image=ph, bg=CARD).pack(pady=6)
             img_ref["img"] = keep
             inner.update_idletasks()
@@ -514,7 +526,7 @@ def run_gui():
     def show_video(data, name):
         clear_prev()
         play["stop"] = False
-        if not (ensure_video() and HAVE_PIL):
+        if not (ensure_video() and ensure_pil()):
             tk.Label(prev, text="영상 미리보기 모듈이 없습니다", font=(FONT, 11),
                      bg=CARD, fg=SUB).pack(expand=True)
             return
@@ -580,12 +592,11 @@ def run_gui():
             except Exception:
                 return
             try:
-                from PIL import Image as _I
-                im = _I.fromarray(frame)
+                im = L.Image.fromarray(frame)
                 cw = max(canv.winfo_width(), 320); ch = max(canv.winfo_height(), 240)
                 im.thumbnail((cw, ch))
                 im = _wm(im)
-                ph = ImageTk.PhotoImage(im)
+                ph = L.ImageTk.PhotoImage(im)
                 img_ref["img"] = ph
                 canv.configure(image=ph)
             except Exception:
@@ -596,7 +607,7 @@ def run_gui():
 
     def show_mesh(data, name):
         clear_prev()
-        if not (ensure_mesh() and HAVE_PIL):
+        if not (ensure_mesh() and ensure_pil()):
             tk.Label(prev, text="3D 미리보기 모듈이 없습니다", font=(FONT, 11),
                      bg=CARD, fg=SUB).pack(expand=True)
             return
@@ -617,7 +628,7 @@ def run_gui():
                 sz = min(sz, 640) or 520
                 im = core.render_mesh_image(mesh, size=sz, angle_x=ang["x"],
                                             angle_y=ang["y"], watermark=watermark)
-                ph = ImageTk.PhotoImage(im); img_ref["img"] = ph
+                ph = L.ImageTk.PhotoImage(im); img_ref["img"] = ph
                 lbl.configure(image=ph)
             except Exception as e:
                 lbl.configure(text="3D 렌더 실패: %s" % e)
@@ -644,8 +655,8 @@ def run_gui():
             # 가능하면 워터마크를 박아서 내보냄 (이미지/PDF/오디오)
             if watermark:
                 try:
-                    if ext in IMG_EXT and HAVE_PIL:
-                        im = _wm(Image.open(io.BytesIO(data)).convert("RGB"))
+                    if ext in IMG_EXT and ensure_pil():
+                        im = _wm(L.Image.open(io.BytesIO(data)).convert("RGB"))
                         im.save(path)
                         wrote = True
                     elif ext == ".wav":
@@ -653,8 +664,8 @@ def run_gui():
                         with open(path, "wb") as f:
                             f.write(wmd)
                         wrote = True
-                    elif ext == ".pdf" and HAVE_PDF:
-                        doc = fitz.open(stream=data, filetype="pdf")
+                    elif ext == ".pdf" and ensure_pdf():
+                        doc = L.fitz.open(stream=data, filetype="pdf")
                         for pg in doc:
                             rect = pg.rect
                             pg.insert_textbox(rect, (watermark + "    ") * 3,
